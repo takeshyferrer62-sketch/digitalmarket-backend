@@ -1,6 +1,7 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR AUTÓNOMO UNIFICADO (Backend + Bot en Render 24/7)
+ * 🌌 DIGITALMARKET - SERVIDOR AUTÓNOMO UNIFICADO Y DEFINITIVO (24/7)
+ * (Incluye E-commerce, Multimoneda, Cupones, Referidos, Historial, Puntos y Broadcast)
  * ============================================================================
  */
 
@@ -26,6 +27,7 @@ const BOT_TOKEN = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZS
 const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/DigitalMarketOfertas';
 const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
 const BOT_USERNAME = process.env.BOT_USERNAME || 'digitalmarketr_bot';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || 'Yunier!289';
 
 const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS users (
     referred_by INTEGER,
     referral_code TEXT UNIQUE,
     balance_cents INTEGER NOT NULL DEFAULT 0,
+    loyalty_points INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS categories (
@@ -96,6 +99,7 @@ CREATE TABLE IF NOT EXISTS orders (
     total_cents INTEGER NOT NULL,
     currency TEXT NOT NULL DEFAULT 'USD',
     discount_code TEXT,
+    shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS order_items (
@@ -120,6 +124,10 @@ CREATE TABLE IF NOT EXISTS payments (
 `;
 
 db.exec(SCHEMA_SQL);
+
+// Migración segura por si la base de datos ya existía sin columnas nuevas
+try { db.exec("ALTER TABLE users ADD COLUMN loyalty_points INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
+try { db.exec("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO';"); } catch(e){}
 
 const EXCHANGE_RATES = {
   RUB: 95.0,
@@ -201,7 +209,7 @@ function centsToDecimalStr(cents) {
 }
 
 // ============================================================================
-// 🤖 LÓGICA DEL BOT DE TELEGRAM INTEGRADA
+// 🤖 LÓGICA DEL BOT DE TELEGRAM INTEGRADA (Con Referidos y Puntos)
 // ============================================================================
 
 const couponSessions = new Map();
@@ -222,7 +230,7 @@ async function callTelegram(method, payload = {}) {
   }
 }
 
-function getMainMenuKeyboard() {
+function getMainMenuKeyboard(userPoints = 0) {
   return {
     inline_keyboard: [
       [
@@ -231,9 +239,14 @@ function getMainMenuKeyboard() {
       ],
       [
         { text: '🛒 Mi Carrito', callback_data: 'cart:view' },
-        { text: '🎁 Promociones y Campañas', callback_data: 'menu:promos' },
+        { text: '📋 Mis Pedidos', callback_data: 'orders:view' },
       ],
       [
+        { text: `💎 Mis Puntos (${userPoints})`, callback_data: 'loyalty:info' },
+        { text: '👥 Sistema de Referidos', callback_data: 'referral:info' },
+      ],
+      [
+        { text: '🎁 Promociones y Campañas', callback_data: 'menu:promos' },
         { text: '🛟 Soporte', callback_data: 'menu:support' }
       ]
     ]
@@ -250,7 +263,7 @@ async function handleTelegramUpdate(u) {
     const chatId = u.message.chat.id;
     await callTelegram('sendMessage', {
       chat_id: chatId,
-      text: `✅ <b>¡Pago con Telegram Stars recibido!</b>\n\nTu orden ha sido procesada con éxito.`,
+      text: `✅ <b>¡Pago con Telegram Stars recibido!</b>\n\nTu orden ha sido procesada con éxito y tus puntos de fidelidad han sido acreditados.`,
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: [[{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]] }
     });
@@ -289,14 +302,28 @@ async function handleTelegramUpdate(u) {
       return;
     }
 
-    db.prepare(`INSERT INTO users (telegram_id, username, full_name, referral_code) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name`).run(telegramId, msg.from.username || null, [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), `ref_${telegramId}`);
+    // Procesar referido si viene en el start (ej. /start ref_12345)
+    let referredById = null;
+    if (text.startsWith('/start ref_')) {
+      const refCode = text.replace('/start ', '').trim();
+      const referrer = db.prepare("SELECT id FROM users WHERE referral_code = ?").get(refCode);
+      if (referrer) referredById = referrer.id;
+    }
+
+    let existingUser = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
+    if (!existingUser) {
+      db.prepare(`INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) VALUES (?, ?, ?, ?, ?)`)
+        .run(telegramId, msg.from.username || null, [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), referredById, `ref_${telegramId}`);
+    }
+
+    const currentUser = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
 
     if (text.startsWith('/start') || text.startsWith('/menu')) {
       await callTelegram('sendMessage', {
         chat_id: chatId,
-        text: `🌌 <b>Bienvenido a DigitalMarket Bot</b>\n\n⚡ Tienda autónoma 24/7 con campañas y conversiones directas.`,
+        text: `🌌 <b>Bienvenido a DigitalMarket Bot</b>\n\n⚡ Tienda autónoma 24/7 con referidos, puntos de fidelidad y historial de pedidos.`,
         parse_mode: 'HTML',
-        reply_markup: getMainMenuKeyboard()
+        reply_markup: getMainMenuKeyboard(currentUser.loyalty_points)
       });
     }
   } else if (u.callback_query) {
@@ -304,6 +331,7 @@ async function handleTelegramUpdate(u) {
     const chatId = cb.message.chat.id;
     const telegramId = cb.from.id;
     const data = cb.data;
+    const user = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
 
     if (data === 'shop:digital' || data === 'shop:physical') {
       const type = data === 'shop:digital' ? 'DIGITAL' : 'PHYSICAL';
@@ -323,7 +351,6 @@ async function handleTelegramUpdate(u) {
       await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: rows } });
     } else if (data.startsWith('buy:')) {
       const productId = Number(data.split(':')[1]);
-      const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(telegramId);
       if (user) {
         let cart = db.prepare("SELECT id FROM carts WHERE user_id = ?").get(user.id);
         if (!cart) {
@@ -334,7 +361,6 @@ async function handleTelegramUpdate(u) {
       }
       await callTelegram('answerCallbackQuery', { callback_query_id: cb.id, text: '✅ Añadido al carrito' });
     } else if (data === 'cart:view') {
-      const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(telegramId);
       let text = `🛒 <b>Tu Carrito de Compras:</b>\n\n`;
       const keyboardRows = [];
 
@@ -346,7 +372,6 @@ async function handleTelegramUpdate(u) {
           let subtotalCents = 0;
           for (const item of items) {
             subtotalCents += item.price_cents * item.quantity;
-            const c = calculateConversions(item.price_cents * item.quantity);
             text += `▫️ <b>${item.name}</b> (x${item.quantity}) — ${(item.price_cents * item.quantity / 100).toFixed(2)} USD\n`;
           }
 
@@ -383,8 +408,35 @@ async function handleTelegramUpdate(u) {
 
       keyboardRows.push([{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]);
       await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: keyboardRows } });
+    } else if (data === 'orders:view') {
+      const orders = user ? db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 5").all(user.id) : [];
+      let text = `📋 <b>Tus Últimos Pedidos:</b>\n\n`;
+      if (orders.length > 0) {
+        for (const o of orders) {
+          text += `📦 <b>Orden #${o.order_code}</b>\n` +
+                  `   • Total: <b>${(o.total_cents/100).toFixed(2)} USD</b>\n` +
+                  `   • Estado Pago: <code>${o.status}</code>\n` +
+                  `   • Envío: <b>${o.shipping_status}</b>\n\n`;
+        }
+      } else {
+        text += `⚪ <i>No tienes pedidos recientes.</i>`;
+      }
+      await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]] } });
+    } else if (data === 'loyalty:info') {
+      let text = `💎 <b>Programa de Fidelidad (DigitalStars)</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+                 `Tienes acumulados: <b>${user.loyalty_points} puntos</b>\n\n` +
+                 `Cada compra te otorga puntos automáticos que podrás canjear próximamente por saldos y descuentos especiales en la tienda.`;
+      await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]] } });
+    } else if (data === 'referral:info') {
+      const refLink = `https://t.me/${BOT_USERNAME}?start=${user.referral_code}`;
+      const refsCount = db.prepare("SELECT COUNT(*) AS count FROM users WHERE referred_by = ?").get(user.id).count;
+      
+      let text = `👥 <b>Sistema de Referidos y Afiliados</b>\n━━━━━━━━━━━━━━━━━━━━\n` +
+                 `Invita a tus amigos y gana recompensas.\n\n` +
+                 `🔗 <b>Tu enlace de invitación:</b>\n<code>${refLink}</code>\n\n` +
+                 `👥 Amigos referidos: <b>${refsCount}</b>`;
+      await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text, parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]] } });
     } else if (data === 'cart:clear') {
-      const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(telegramId);
       if (user) {
         const cart = db.prepare("SELECT id FROM carts WHERE user_id = ?").get(user.id);
         if (cart) {
@@ -424,33 +476,60 @@ async function handleTelegramUpdate(u) {
       });
     } else if (data.startsWith('pay:')) {
       const provider = data === 'pay:usdt' ? 'USDT_BYBIT' : data === 'pay:stars' ? 'TELEGRAM_STARS' : data === 'pay:sbp' ? 'SBP_RUB' : 'TRANSFERMOVIL';
-      const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(telegramId);
       
+      const cart = db.prepare("SELECT id, discount_code FROM carts WHERE user_id = ?").get(user.id);
+      const items = cart ? db.prepare("SELECT ci.quantity, p.id, p.name, p.price_cents, p.product_type FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?").all(cart.id) : [];
+
+      if (items.length === 0) {
+        await callTelegram('answerCallbackQuery', { callback_query_id: cb.id, text: '❌ Carrito vacío' });
+        return;
+      }
+
+      let subtotalCents = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
+      let discountCents = 0;
+      let totalItems = items.reduce((acc, i) => acc + i.quantity, 0);
+
+      if (cart.discount_code) {
+        const disc = db.prepare("SELECT percent_off, min_items FROM discounts WHERE code = ?").get(cart.discount_code);
+        if (disc && totalItems >= disc.min_items) {
+          discountCents = Math.floor((subtotalCents * disc.percent_off) / 100);
+        }
+      }
+
+      const totalCents = Math.max(0, subtotalCents - discountCents);
+      const orderCode = `DM-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+
+      // Crear orden real en BD y otorgar puntos de fidelidad
+      const earnedPoints = Math.floor(totalCents / 100); // 1 punto por dólar
+      db.prepare("INSERT INTO orders (order_code, user_id, status, subtotal_cents, discount_cents, total_cents, currency, discount_code, shipping_status) VALUES (?, ?, 'PENDING_PAYMENT', ?, ?, ?, 'USD', ?, 'PREPARANDO_ENVIO')")
+        .run(orderCode, user.id, subtotalCents, discountCents, totalCents, cart.discount_code);
+
+      db.prepare("UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?").run(earnedPoints, user.id);
+      db.prepare("DELETE FROM cart_items WHERE cart_id = ?").run(cart.id);
+      db.prepare("UPDATE carts SET discount_code = NULL WHERE id = ?").run(cart.id);
+
       if (provider === 'TELEGRAM_STARS') {
-        // Generar factura stars directa
-        const cart = db.prepare("SELECT id FROM carts WHERE user_id = ?").get(user.id);
-        const items = db.prepare("SELECT ci.quantity, p.name, p.price_cents FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?").all(cart.id);
-        const subtotal = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
-        const stars = Math.max(1, Math.ceil((subtotal / 100) * 50));
-        
+        const stars = Math.max(1, Math.ceil((totalCents / 100) * 50));
         await callTelegram('sendInvoice', {
           chat_id: chatId,
-          title: `Pedido DigitalMarket`,
-          description: `Compra de artículos digitales`,
-          payload: `DM-${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+          title: `Orden #${orderCode}`,
+          description: `Compra en DigitalMarket`,
+          payload: orderCode,
           currency: 'XTR',
           prices: [{ label: 'Estrellas', amount: stars }]
         });
         return;
       }
 
-      let msg = `✅ <b>¡Orden Generada con Éxito!</b>\n\n`;
+      let msg = `✅ <b>¡Orden Generada (#${orderCode})!</b>\n\n`;
       if (provider === 'USDT_BYBIT') {
-        msg += `⚡ <b>Pago USDT Automatizado (Bybit API):</b>\nEnvía los USDT a nuestra dirección oficial en red TRC20/TON y la API validará tu depósito automáticamente.`;
+        msg += `⚡ <b>Pago USDT Automatizado (Bybit API):</b>\nMonto: <b>${(totalCents/100).toFixed(2)} USD (USDT)</b>\nEnvía los USDT a nuestra dirección oficial TRC20/TON.`;
       } else if (provider === 'SBP_RUB') {
-        msg += `🇷🇺 <b>Datos de Pago SBP / RUB:</b>\n• Teléfono SBP: <code>+79252481911</code>\n• Tarjeta directa: <code>2200 2479 5577 1879</code>\n\n<i>Envía tu comprobante con tu código de usuario.</i>`;
+        const c = calculateConversions(totalCents);
+        msg += `🇷🇺 <b>Datos de Pago SBP / RUB:</b>\nMonto: <b>~${c.RUB} RUB</b>\n• Teléfono SBP: <code>+79252481911</code>\n• Tarjeta: <code>2200 2479 5577 1879</code>`;
       } else if (provider === 'TRANSFERMOVIL') {
-        msg += `🇨🇺 <b>Datos de Pago Transfermóvil (Cuba):</b>\n• Tarjeta CUP: <code>9204 1299 7694 7558</code>\n• Tarjeta Clásica/MLC: <code>9760 0390 0983 2477</code>\n\n<i>Envía la captura del comprobante.</i>`;
+        const c = calculateConversions(totalCents);
+        msg += `🇨🇺 <b>Datos de Pago Transfermóvil (Cuba):</b>\nMonto: <b>~${c.CUP} CUP</b>\n• Tarjeta CUP: <code>9204 1299 7694 7558</code>\n• Tarjeta Clásica/MLC: <code>9760 0390 0983 2477</code>`;
       }
 
       await callTelegram('editMessageText', {
@@ -463,13 +542,14 @@ async function handleTelegramUpdate(u) {
     } else if (data === 'menu:support') {
       await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: `🛟 <b>Soporte Técnico:</b>\nEscríbenos ante cualquier duda con tu pago.`, parse_mode: 'HTML', reply_markup: { inline_keyboard: [[{ text: '⬅️ Menú Principal', callback_data: 'menu:home' }]] } });
     } else if (data === 'menu:home') {
-      await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: `🌌 <b>Menú Principal</b>`, parse_mode: 'HTML', reply_markup: getMainMenuKeyboard() });
+      const freshUser = db.prepare("SELECT loyalty_points FROM users WHERE telegram_id = ?").get(telegramId);
+      await callTelegram('editMessageText', { chat_id: chatId, message_id: cb.message.message_id, text: `🌌 <b>Menú Principal</b>`, parse_mode: 'HTML', reply_markup: getMainMenuKeyboard(freshUser?.loyalty_points || 0) });
     }
   }
 }
 
 // ============================================================================
-// 🌐 ENDPOINTS EXPRESS (API + Webhook de Telegram)
+// 🌐 ENDPOINTS EXPRESS (API + Webhook + Broadcast Admin)
 // ============================================================================
 
 app.post('/api/telegram-webhook', async (req, res) => {
@@ -486,6 +566,32 @@ app.post('/api/telegram-webhook', async (req, res) => {
 app.get('/api/products', (req, res) => {
   const products = db.prepare("SELECT * FROM products WHERE is_active = 1").all();
   res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
+});
+
+// Endpoint Admin para Broadcast Masivo de Notificaciones
+app.post('/api/admin/broadcast', async (req, res) => {
+  const { secret, message } = req.body;
+  if (secret !== ADMIN_SECRET) {
+    return res.status(403).json({ error: 'No autorizado' });
+  }
+  if (!message) {
+    return res.status(400).json({ error: 'Mensaje requerido' });
+  }
+
+  const users = db.prepare("SELECT telegram_id FROM users WHERE is_blocked = 0").all();
+  let successCount = 0;
+
+  for (const u of users) {
+    const sent = await callTelegram('sendMessage', {
+      chat_id: u.telegram_id,
+      text: message,
+      parse_mode: 'HTML'
+    });
+    if (sent) successCount++;
+    await new Promise(r => setTimeout(r, 50)); // Pausa de cortesía antispam
+  }
+
+  res.json({ success: true, totalSent: successCount });
 });
 
 // ============================================================================
@@ -525,6 +631,6 @@ class ChannelAutomationScheduler {
 }
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Servidor Autónomo unificado en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Definitivo unificado en puerto ${PORT}`);
   new ChannelAutomationScheduler(db).startScheduler();
 });
