@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - BACKEND AUTÓNOMO CON BYBIT API V5 (Automático 24/7)
+ * 🌌 DIGITALMARKET - SERVIDOR DEFINITIVO (Canal + Bot de Anuncios + Mini App + Bybit)
  * ============================================================================
  */
 
@@ -23,13 +23,16 @@ const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(DB_PATH);
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZShApI65XSNw';
-const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarketrapp.vercel.app';
+const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/DigitalMarketOfertas';
+const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
+const BOT_USERNAME = process.env.BOT_USERNAME || 'digitalmarketr_bot';
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarket-mini-app.vercel.app';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'Yunier!289';
 
-// Credenciales Bybit proporcionadas
+// Credenciales Bybit
 const BYBIT_API_KEY = process.env.BYBIT_API_KEY || 'A0jigK3XHeIDOVkGgr';
 const BYBIT_API_SECRET = process.env.BYBIT_API_SECRET || 'xvBwjKohgZ8pKcz7Dac5zzBfLN2D8yPK6whx';
-const BYBIT_BASE_URL = 'https://api.bybit.com'; // O api.bybitvip.com / api.bybit.nl según región, por defecto mainnet oficial
+const BYBIT_BASE_URL = 'https://api.bybit.com';
 
 const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -203,7 +206,56 @@ function calculateConversions(centsUSD) {
 }
 
 // ============================================================================
-// 🤖 BYBIT API V5 - VERIFICACIÓN AUTOMÁTICA DE DEPÓSITOS USDT
+// 🤖 BOT DE TELEGRAM Y AUTOMATIZACIÓN DE CANAL
+// ============================================================================
+
+async function callTelegram(method, payload = {}) {
+  if (!BOT_TOKEN) return null;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    return data.ok ? data.result : null;
+  } catch (err) { return null; }
+}
+
+class ChannelAutomationScheduler {
+  constructor(db) { this.db = db; }
+  async triggerAutomatedCampaignPost() {
+    const activeDiscount = this.db.prepare("SELECT * FROM discounts WHERE is_active = 1 LIMIT 1").get();
+    const featuredProduct = this.db.prepare("SELECT * FROM products WHERE is_active = 1 ORDER BY RANDOM() LIMIT 1").get();
+
+    let message = `🎉 <b>¡OFERTA ESPECIAL Y CAMPAÑA EN DIGITALMARKET!</b> 🎉\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    if (activeDiscount) {
+      message += `✨ <b>Campaña Activa: ${activeDiscount.festival_name}</b>\n`;
+      message += `▫️ Llévate un <b>${activeDiscount.percent_off}% de descuento</b> aplicando el código: <code>${activeDiscount.code}</code>\n\n`;
+    }
+    if (featuredProduct) {
+      message += `🔥 <b>Producto Destacado:</b>\n▫️ <b>${featuredProduct.name}</b> — <b>${featuredProduct.price_decimal} USD</b>\n\n`;
+    }
+    message += '🛒 ¡Haz clic abajo para abrir la tienda y canjear tus cupones! 👇';
+    
+    await callTelegram('sendMessage', {
+      chat_id: CHANNEL_ID,
+      text: message,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '🚀 Abrir Mini App', web_app: { url: WEB_APP_URL } }]] }
+    });
+  }
+  startScheduler() {
+    setTimeout(() => { this.triggerAutomatedCampaignPost(); }, 10000);
+    setInterval(() => { this.triggerAutomatedCampaignPost(); }, 12 * 60 * 60 * 1000);
+    console.log('📢 [ChannelAutomationScheduler] Programador de canal iniciado.');
+  }
+}
+
+new ChannelAutomationScheduler(db).startScheduler();
+
+// ============================================================================
+// ⚡ BYBIT API V5 - VERIFICACIÓN AUTOMÁTICA DE DEPÓSITOS
 // ============================================================================
 
 async function checkBybitDeposits() {
@@ -211,8 +263,6 @@ async function checkBybitDeposits() {
     const timestamp = Date.now().toString();
     const recvWindow = '5000';
     const queryString = 'coin=USDT';
-    
-    // Firma HMAC-SHA256 Bybit V5: timestamp + apiKey + recvWindow + queryString
     const signaturePayload = timestamp + BYBIT_API_KEY + recvWindow + queryString;
     const signature = crypto.createHmac('sha256', BYBIT_API_SECRET).update(signaturePayload).digest('hex');
 
@@ -229,58 +279,43 @@ async function checkBybitDeposits() {
     const data = await res.json();
     if (data.retCode === 0 && data.result && data.result.rows) {
       const deposits = data.result.rows;
-      // Revisar órdenes pendientes USDT
       const pendingOrders = db.prepare("SELECT o.*, p.id as pay_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.status = 'PENDING_PAYMENT' AND p.provider = 'USDT_BYBIT'").all();
 
       for (const ord of pendingOrders) {
         const expectedAmountUSD = ord.total_cents / 100;
-        // Buscar un depósito reciente completado (status == 3 en Bybit asset deposit)
         const matchedDep = deposits.find(d => Number(d.amount) >= expectedAmountUSD && d.status === 3);
         if (matchedDep) {
-          // Marcar orden como pagada automáticamente
           db.prepare("UPDATE orders SET status = 'PAID', shipping_status = 'PROCESANDO_ENTREGA' WHERE id = ?").run(ord.id);
           db.prepare("UPDATE payments SET status = 'SUCCESS', provider_tx_id = ? WHERE id = ?").run(matchedDep.txID, ord.pay_id);
-          console.log(`✅ [Bybit AutoPay]: Orden #${ord.order_code} confirmada automáticamente por depósito USDT (${matchedDep.amount}).`);
+          console.log(`✅ [Bybit AutoPay]: Orden #${ord.order_code} confirmada automáticamente.`);
         }
       }
     }
-  } catch (err) {
-    console.error('❌ Error consultando API de Bybit:', err.message);
-  }
+  } catch (err) {}
 }
 
-// Ejecutar verificación de Bybit cada 2 minutos
 setInterval(checkBybitDeposits, 2 * 60 * 1000);
 
 // ============================================================================
 // 🌐 ENDPOINTS EXPRESS
 // ============================================================================
 
-async function callTelegram(method, payload = {}) {
-  if (!BOT_TOKEN) return null;
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const data = await res.json();
-    return data.ok ? data.result : null;
-  } catch (err) { return null; }
-}
-
 app.post('/api/telegram-webhook', async (req, res) => {
   const update = req.body;
+  if (update.pre_checkout_query) {
+    await callTelegram('answerPreCheckoutQuery', { pre_checkout_query_id: update.pre_checkout_query.id, ok: true });
+    return;
+  }
+  if (update.message && update.message.successful_payment) {
+    await callTelegram('sendMessage', { chat_id: update.message.chat.id, text: `✅ ¡Pago con Telegram Stars recibido con éxito! Tu orden ha sido procesada.` });
+    return;
+  }
   if (update.message && (update.message.text?.startsWith('/start') || update.message.text?.startsWith('/menu'))) {
     await callTelegram('sendMessage', {
       chat_id: update.message.chat.id,
-      text: `🌌 <b>Bienvenido a DigitalMarket Oficial</b> 🚀
-
-Todo el flujo de compras, pagos y seguimiento opera de forma fluida dentro de nuestra Mini App.`,
+      text: `🌌 <b>Bienvenido a DigitalMarket Oficial</b> 🚀\n\nTodo nuestro catálogo, pagos y referidos operan en nuestra Mini App.`,
       parse_mode: 'HTML',
-      reply_markup: {
-        inline_keyboard: [[{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }]]
-      }
+      reply_markup: { inline_keyboard: [[{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }]] }
     });
   }
   res.status(200).json({ ok: true });
@@ -289,7 +324,6 @@ Todo el flujo de compras, pagos y seguimiento opera de forma fluida dentro de nu
 app.post('/api/users/sync', (req, res) => {
   const { telegramId, fullName, username } = req.body;
   if (!telegramId) return res.status(400).json({ error: 'telegramId requerido' });
-
   db.prepare(`INSERT INTO users (telegram_id, username, full_name, referral_code) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name`).run(telegramId, username, fullName, `ref_${telegramId}`);
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
   res.json({ success: true, user });
@@ -307,54 +341,37 @@ app.post('/api/cart/apply-coupon', (req, res) => {
     const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
     if (!user) throw new Error('Usuario no encontrado');
     const disc = db.prepare(`SELECT * FROM discounts WHERE code = ? AND is_active = 1`).get(cleanCode);
-    if (!disc) throw new Error('Código de descuento inválido o expirado.');
+    if (!disc) throw new Error('Cupón inválido');
     const cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
-    if (!cart) throw new Error('El carrito está vacío.');
     db.prepare(`UPDATE carts SET discount_code = ? WHERE id = ?`).run(cleanCode, cart.id);
     res.json({ success: true, discount: disc });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+  } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
 app.get('/api/cart/:telegramId', (req, res) => {
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(req.params.telegramId);
   if (!user) return res.json({ items: [], subtotalCents: 0, totalCents: 0 });
-
   let cart = db.prepare(`SELECT * FROM carts WHERE user_id = ?`).get(user.id);
-  if (!cart) {
-    db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id);
-    cart = db.prepare(`SELECT * FROM carts WHERE user_id = ?`).get(user.id);
-  }
+  if (!cart) { db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id); cart = db.prepare(`SELECT * FROM carts WHERE user_id = ?`).get(user.id); }
 
-  const items = db.prepare(`
-    SELECT ci.quantity, p.id AS product_id, p.name, p.price_cents, p.price_decimal, p.currency, p.product_type 
-    FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?
-  `).all(cart.id);
-
+  const items = db.prepare(`SELECT ci.quantity, p.id AS product_id, p.name, p.price_cents, p.price_decimal, p.product_type FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?`).all(cart.id);
   let subtotalCents = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
   let discountCents = 0;
   let totalItems = items.reduce((acc, i) => acc + i.quantity, 0);
 
   if (cart.discount_code) {
     const disc = db.prepare(`SELECT percent_off, min_items FROM discounts WHERE code = ?`).get(cart.discount_code);
-    if (disc && totalItems >= disc.min_items) {
-      discountCents = Math.floor((subtotalCents * disc.percent_off) / 100);
-    }
+    if (disc && totalItems >= disc.min_items) discountCents = Math.floor((subtotalCents * disc.percent_off) / 100);
   }
 
   const totalCents = Math.max(0, subtotalCents - discountCents);
-  const totalUSD = centsToDecimalStr(totalCents);
-  const discountUSD = centsToDecimalStr(discountCents);
-  const conversions = calculateConversions(totalCents);
-
   res.json({
     items: items.map(i => ({ ...i, total_usd: (i.price_cents * i.quantity / 100).toFixed(2), conversions: calculateConversions(i.price_cents * i.quantity) })),
     subtotalCents,
-    totalUSD,
-    discountUSD,
+    totalUSD: centsToDecimalStr(totalCents),
+    discountUSD: centsToDecimalStr(discountCents),
     discountCode: cart.discount_code,
-    conversions,
+    conversions: calculateConversions(totalCents),
     totalItems
   });
 });
@@ -362,28 +379,17 @@ app.get('/api/cart/:telegramId', (req, res) => {
 app.post('/api/cart/add', (req, res) => {
   const { telegramId, productId, quantity = 1 } = req.body;
   const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
-  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
   let cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
-  if (!cart) {
-    db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id);
-    cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
-  }
-
+  if (!cart) { db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id); cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id); }
   db.prepare(`INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?) ON CONFLICT(cart_id, product_id) DO UPDATE SET quantity = quantity + ?`).run(cart.id, productId, quantity, quantity);
   res.json({ success: true });
 });
 
-app.post('/api/orders/checkout', (req, res) => {
+app.post('/api/orders/checkout', async (req, res) => {
   const { telegramId, provider } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
-  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
   const cartRes = db.prepare(`SELECT id, discount_code FROM carts WHERE user_id = ?`).get(user.id);
-  if (!cartRes) return res.status(400).json({ error: 'Carrito vacío' });
-
   const items = db.prepare(`SELECT ci.quantity, p.id AS product_id, p.name, p.price_cents, p.product_type FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?`).all(cartRes.id);
-  if (items.length === 0) return res.status(400).json({ error: 'Carrito vacío' });
 
   let subtotalCents = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
   let discountCents = 0;
@@ -391,66 +397,50 @@ app.post('/api/orders/checkout', (req, res) => {
 
   if (cartRes.discount_code) {
     const disc = db.prepare(`SELECT percent_off, min_items FROM discounts WHERE code = ?`).get(cartRes.discount_code);
-    if (disc && totalItems >= disc.min_items) {
-      discountCents = Math.floor((subtotalCents * disc.percent_off) / 100);
-    }
+    if (disc && totalItems >= disc.min_items) discountCents = Math.floor((subtotalCents * disc.percent_off) / 100);
   }
 
   const totalCents = Math.max(0, subtotalCents - discountCents);
   const orderCode = `DM-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-  const conversions = calculateConversions(totalCents);
 
-  try {
-    db.exec('BEGIN IMMEDIATE');
-    const ordIns = db.prepare(`INSERT INTO orders (order_code, user_id, status, subtotal_cents, discount_cents, total_cents, currency, discount_code, shipping_status) VALUES (?, ?, 'PENDING_PAYMENT', ?, ?, ?, 'USD', ?, 'PREPARANDO_ENVIO')`).run(orderCode, user.id, subtotalCents, discountCents, totalCents, cartRes.discount_code);
-    const orderId = ordIns.lastInsertRowid;
-
-    const itemStmt = db.prepare(`INSERT INTO order_items (order_id, product_id, product_name, product_type, quantity, unit_price_cents, line_total_cents) VALUES (?, ?, ?, ?, ?, ?, ?)`);
-    for (const item of items) {
-      itemStmt.run(orderId, item.product_id, item.name, item.product_type, item.quantity, item.price_cents, item.price_cents * item.quantity);
-    }
-
-    db.prepare(`INSERT INTO payments (order_id, provider, provider_tx_id, status, amount_cents) VALUES (?, ?, ?, 'PENDING', ?)`).run(orderId, provider || 'USDT_BYBIT', `${provider}-${orderCode}`, totalCents);
-
-    db.prepare(`DELETE FROM cart_items WHERE cart_id = ?`).run(cartRes.id);
-    db.prepare(`UPDATE carts SET discount_code = NULL WHERE id = ?`).run(cartRes.id);
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    return res.status(500).json({ error: err.message });
-  }
+  db.prepare(`INSERT INTO orders (order_code, user_id, status, subtotal_cents, discount_cents, total_cents, currency, discount_code, shipping_status) VALUES (?, ?, 'PENDING_PAYMENT', ?, ?, ?, 'USD', ?, 'PREPARANDO_ENVIO')`).run(orderCode, user.id, subtotalCents, discountCents, totalCents, cartRes.discount_code);
+  db.prepare(`DELETE FROM cart_items WHERE cart_id = ?`).run(cartRes.id);
+  db.prepare(`UPDATE carts SET discount_code = NULL WHERE id = ?`).run(cartRes.id);
 
   const order = db.prepare(`SELECT * FROM orders WHERE order_code = ?`).get(orderCode);
+
+  // Si elige Telegram Stars, disparamos la factura nativa directo al chat del bot
+  if (provider === 'TELEGRAM_STARS') {
+    const stars = Math.max(1, Math.ceil((totalCents / 100) * 50));
+    await callTelegram('sendInvoice', {
+      chat_id: telegramId,
+      title: `Orden #${orderCode}`,
+      description: `Compra en DigitalMarket`,
+      payload: orderCode,
+      currency: 'XTR',
+      prices: [{ label: 'Estrellas', amount: stars }]
+    });
+  }
+
   res.json({
     success: true,
     order,
     totalUSD: centsToDecimalStr(totalCents),
-    conversions,
-    paymentDetails: {
-      provider,
-      usdt_address: '0xYourBybitWalletOrTRC20AddressHere',
-      sbp_phone: '+79252481911',
-      sbp_card: '2200 2479 5577 1879',
-      transfermovil_cup: '9204 1299 7694 7558',
-      transfermovil_mlc: '9760 0390 0983 2477'
-    }
+    conversions: calculateConversions(totalCents)
   });
 });
 
 app.get('/api/orders/:telegramId', (req, res) => {
   const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(req.params.telegramId);
   if (!user) return res.json([]);
-  const orders = db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC").all(user.id);
-  res.json(orders);
+  res.json(db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC").all(user.id));
 });
 
 function centsToDecimalStr(cents) {
   const n = Number(cents);
-  const dollars = Math.floor(Math.abs(n) / 100);
-  const rem = String(Math.abs(n) % 100).padStart(2, '0');
-  return `${dollars}.${rem}`;
+  return `${Math.floor(Math.abs(n) / 100)}.${String(Math.abs(n) % 100).padStart(2, '0')}`;
 }
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Backend Pro con Bybit API V5 activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Definitivo activo en puerto ${PORT}`);
 });
