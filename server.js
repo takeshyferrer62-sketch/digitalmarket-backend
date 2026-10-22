@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR Y BOT DE MARKETING Y ANUNCIOS (Mini App Powered)
+ * 🌌 DIGITALMARKET - BACKEND AUTÓNOMO CON BYBIT API V5 (Automático 24/7)
  * ============================================================================
  */
 
@@ -23,10 +23,13 @@ const { DatabaseSync } = require('node:sqlite');
 const db = new DatabaseSync(DB_PATH);
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZShApI65XSNw';
-const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/DigitalMarketOfertas';
-const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
-const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarketrapp.vercel.app'; // URL de la Mini App desplegada
+const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarketrapp.vercel.app';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'Yunier!289';
+
+// Credenciales Bybit proporcionadas
+const BYBIT_API_KEY = process.env.BYBIT_API_KEY || 'A0jigK3XHeIDOVkGgr';
+const BYBIT_API_SECRET = process.env.BYBIT_API_SECRET || 'xvBwjKohgZ8pKcz7Dac5zzBfLN2D8yPK6whx';
+const BYBIT_BASE_URL = 'https://api.bybit.com'; // O api.bybitvip.com / api.bybit.nl según región, por defecto mainnet oficial
 
 const SCHEMA_SQL = `
 PRAGMA foreign_keys = ON;
@@ -200,7 +203,57 @@ function calculateConversions(centsUSD) {
 }
 
 // ============================================================================
-// 🤖 NUEVO BOT DE TELEGRAM (Enfoque de Marketing, Banners, Cupones y WebApp)
+// 🤖 BYBIT API V5 - VERIFICACIÓN AUTOMÁTICA DE DEPÓSITOS USDT
+// ============================================================================
+
+async function checkBybitDeposits() {
+  try {
+    const timestamp = Date.now().toString();
+    const recvWindow = '5000';
+    const queryString = 'coin=USDT';
+    
+    // Firma HMAC-SHA256 Bybit V5: timestamp + apiKey + recvWindow + queryString
+    const signaturePayload = timestamp + BYBIT_API_KEY + recvWindow + queryString;
+    const signature = crypto.createHmac('sha256', BYBIT_API_SECRET).update(signaturePayload).digest('hex');
+
+    const res = await fetch(`${BYBIT_BASE_URL}/v5/asset/deposit/query-record?${queryString}`, {
+      method: 'GET',
+      headers: {
+        'X-BAPI-API-KEY': BYBIT_API_KEY,
+        'X-BAPI-TIMESTAMP': timestamp,
+        'X-BAPI-SIGN': signature,
+        'X-BAPI-RECV-WINDOW': recvWindow
+      }
+    });
+
+    const data = await res.json();
+    if (data.retCode === 0 && data.result && data.result.rows) {
+      const deposits = data.result.rows;
+      // Revisar órdenes pendientes USDT
+      const pendingOrders = db.prepare("SELECT o.*, p.id as pay_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.status = 'PENDING_PAYMENT' AND p.provider = 'USDT_BYBIT'").all();
+
+      for (const ord of pendingOrders) {
+        const expectedAmountUSD = ord.total_cents / 100;
+        // Buscar un depósito reciente completado (status == 3 en Bybit asset deposit)
+        const matchedDep = deposits.find(d => Number(d.amount) >= expectedAmountUSD && d.status === 3);
+        if (matchedDep) {
+          // Marcar orden como pagada automáticamente
+          db.prepare("UPDATE orders SET status = 'PAID', shipping_status = 'PROCESANDO_ENTREGA' WHERE id = ?").run(ord.id);
+          db.prepare("UPDATE payments SET status = 'SUCCESS', provider_tx_id = ? WHERE id = ?").run(matchedDep.txID, ord.pay_id);
+          console.log(`✅ [Bybit AutoPay]: Orden #${ord.order_code} confirmada automáticamente por depósito USDT (${matchedDep.amount}).`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('❌ Error consultando API de Bybit:', err.message);
+  }
+}
+
+// Ejecutar verificación de Bybit cada 2 minutos
+setInterval(checkBybitDeposits, 2 * 60 * 1000);
+
+// ============================================================================
+// 🌐 ENDPOINTS EXPRESS
 // ============================================================================
 
 async function callTelegram(method, payload = {}) {
@@ -213,140 +266,24 @@ async function callTelegram(method, payload = {}) {
     });
     const data = await res.json();
     return data.ok ? data.result : null;
-  } catch (err) {
-    console.error(`❌ [Telegram API ${method}]:`, err.message);
-    return null;
-  }
+  } catch (err) { return null; }
 }
-
-async function handleTelegramUpdate(u) {
-  if (u.pre_checkout_query) {
-    await callTelegram('answerPreCheckoutQuery', { pre_checkout_query_id: u.pre_checkout_query.id, ok: true });
-    return;
-  }
-
-  if (u.message && u.message.successful_payment) {
-    const chatId = u.message.chat.id;
-    await callTelegram('sendMessage', {
-      chat_id: chatId,
-      text: `✅ <b>¡Pago con Telegram Stars recibido!</b>\n\nTu orden ha sido procesada con éxito en la Mini App.`,
-      parse_mode: 'HTML'
-    });
-    return;
-  }
-
-  if (u.message && u.message.text) {
-    const msg = u.message;
-    const chatId = msg.chat.id;
-    const telegramId = msg.from.id;
-    const text = msg.text.trim();
-
-    // Registrar o actualizar usuario
-    let referredById = null;
-    if (text.startsWith('/start ref_')) {
-      const refCode = text.replace('/start ', '').trim();
-      const referrer = db.prepare("SELECT id FROM users WHERE referral_code = ?").get(refCode);
-      if (referrer) referredById = referrer.id;
-    }
-
-    let existingUser = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
-    if (!existingUser) {
-      db.prepare(`INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) VALUES (?, ?, ?, ?, ?)`)
-        .run(telegramId, msg.from.username || null, [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), referredById, `ref_${telegramId}`);
-    }
-
-    if (text.startsWith('/start') || text.startsWith('/menu')) {
-      const welcomeCaption = `🌌 <b>¡Bienvenido a DigitalMarket Oficial!</b> 🚀\n\n` +
-                             `Todo nuestro catálogo, pagos automatizados, referidos y puntos de fidelidad ahora operan en nuestra ultrarrápida <b>Mini App</b>.\n\n` +
-                             `🔥 <i>Haz clic en el botón de abajo para explorar preventas, cuentas digitales, cupones activos y ofertas exclusivas.</i>`;
-
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: welcomeCaption,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }],
-            [{ text: '🎁 Ver Cupones y Campañas Activas', callback_data: 'bot:promo_banner' }],
-            [{ text: '🏆 Logros y Comunidad', callback_data: 'bot:success_story' }]
-          ]
-        }
-      });
-    }
-  } else if (u.callback_query) {
-    const cb = u.callback_query;
-    const chatId = cb.message.chat.id;
-    const data = cb.data;
-
-    if (data === 'bot:promo_banner') {
-      const activeDiscounts = db.prepare("SELECT * FROM discounts WHERE is_active = 1").all();
-      let text = `🎁 <b>¡Cupones y Campañas Flash Disponibles!</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
-      for (const d of activeDiscounts) {
-        text += `✨ <b>${d.festival_name}</b>\n   ▫️ Código: <code>${d.code}</code>\n   ▫️ Descuento: <b>${d.percent_off}% OFF</b>\n\n`;
-      }
-      text += `💡 <i>Copia tu código y utilízalo al pagar en la Mini App.</i>`;
-
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛍️ Ir a Comprar en la Mini App', web_app: { url: WEB_APP_URL } }],
-            [{ text: '⬅️ Menú Principal', callback_data: 'bot:home' }]
-          ]
-        }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    } else if (data === 'bot:success_story') {
-      const text = `🏆 <b>¡Logros y Testimonios de la Comunidad!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n` +
-                   `📦 Más de <b>500+ envíos y entregas digitales</b> realizadas con éxito en Rusia y Cuba.\n` +
-                   `⭐ Procesamiento de pagos optimizado con USDT, Telegram Stars, SBP y Transfermóvil.\n\n` +
-                   `¡Sé parte de nuestra red de clientes satisfechos!`;
-
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🚀 Abrir Mini App', web_app: { url: WEB_APP_URL } }],
-            [{ text: '⬅️ Menú Principal', callback_data: 'bot:home' }]
-          ]
-        }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    } else if (data === 'bot:home') {
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: `🌌 <b>Menú Principal - DigitalMarket</b>`,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }],
-            [{ text: '🎁 Ver Cupones y Campañas Activas', callback_data: 'bot:promo_banner' }],
-            [{ text: '🏆 Logros y Comunidad', callback_data: 'bot:success_story' }]
-          ]
-        }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    }
-  }
-}
-
-// ============================================================================
-// 🌐 ENDPOINTS EXPRESS (API para la Mini App + Broadcast de Anuncios)
-// ============================================================================
 
 app.post('/api/telegram-webhook', async (req, res) => {
   const update = req.body;
-  try {
-    await handleTelegramUpdate(update);
-    res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error('❌ Error en webhook:', err.message);
-    res.status(500).json({ error: err.message });
+  if (update.message && (update.message.text?.startsWith('/start') || update.message.text?.startsWith('/menu'))) {
+    await callTelegram('sendMessage', {
+      chat_id: update.message.chat.id,
+      text: `🌌 <b>Bienvenido a DigitalMarket Oficial</b> 🚀
+
+Todo el flujo de compras, pagos y seguimiento opera de forma fluida dentro de nuestra Mini App.`,
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [[{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }]]
+      }
+    });
   }
+  res.status(200).json({ ok: true });
 });
 
 app.post('/api/users/sync', (req, res) => {
@@ -358,33 +295,21 @@ app.post('/api/users/sync', (req, res) => {
   res.json({ success: true, user });
 });
 
-app.get('/api/categories', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM categories WHERE is_active = 1`).all());
-});
-
 app.get('/api/products', (req, res) => {
   const products = db.prepare("SELECT * FROM products WHERE is_active = 1").all();
   res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
 });
 
-app.get('/api/discounts', (req, res) => {
-  res.json(db.prepare(`SELECT * FROM discounts WHERE is_active = 1`).all());
-});
-
 app.post('/api/cart/apply-coupon', (req, res) => {
   const { telegramId, code } = req.body;
   const cleanCode = String(code).trim().toUpperCase();
-
   try {
     const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
     if (!user) throw new Error('Usuario no encontrado');
-
     const disc = db.prepare(`SELECT * FROM discounts WHERE code = ? AND is_active = 1`).get(cleanCode);
     if (!disc) throw new Error('Código de descuento inválido o expirado.');
-
     const cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
     if (!cart) throw new Error('El carrito está vacío.');
-
     db.prepare(`UPDATE carts SET discount_code = ? WHERE id = ?`).run(cleanCode, cart.id);
     res.json({ success: true, discount: disc });
   } catch (err) {
@@ -423,16 +348,8 @@ app.get('/api/cart/:telegramId', (req, res) => {
   const discountUSD = centsToDecimalStr(discountCents);
   const conversions = calculateConversions(totalCents);
 
-  const processedItems = items.map(i => {
-    return {
-      ...i,
-      total_usd: (i.price_cents * i.quantity / 100).toFixed(2),
-      conversions: calculateConversions(i.price_cents * i.quantity)
-    };
-  });
-
   res.json({
-    items: processedItems,
+    items: items.map(i => ({ ...i, total_usd: (i.price_cents * i.quantity / 100).toFixed(2), conversions: calculateConversions(i.price_cents * i.quantity) })),
     subtotalCents,
     totalUSD,
     discountUSD,
@@ -453,25 +370,7 @@ app.post('/api/cart/add', (req, res) => {
     cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
   }
 
-  const existing = db.prepare(`SELECT * FROM cart_items WHERE cart_id = ? AND product_id = ?`).get(cart.id, productId);
-  if (existing) {
-    db.prepare(`UPDATE cart_items SET quantity = quantity + ? WHERE cart_id = ? AND product_id = ?`).run(quantity, cart.id, productId);
-  } else {
-    db.prepare(`INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?)`).run(cart.id, productId, quantity);
-  }
-
-  res.json({ success: true });
-});
-
-app.delete('/api/cart/:telegramId', (req, res) => {
-  const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(req.params.telegramId);
-  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
-
-  const cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
-  if (cart) {
-    db.prepare(`DELETE FROM cart_items WHERE cart_id = ?`).run(cart.id);
-    db.prepare(`UPDATE carts SET discount_code = NULL WHERE id = ?`).run(cart.id);
-  }
+  db.prepare(`INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?) ON CONFLICT(cart_id, product_id) DO UPDATE SET quantity = quantity + ?`).run(cart.id, productId, quantity, quantity);
   res.json({ success: true });
 });
 
@@ -499,7 +398,7 @@ app.post('/api/orders/checkout', (req, res) => {
 
   const totalCents = Math.max(0, subtotalCents - discountCents);
   const orderCode = `DM-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-  const earnedPoints = Math.floor(totalCents / 100);
+  const conversions = calculateConversions(totalCents);
 
   try {
     db.exec('BEGIN IMMEDIATE');
@@ -512,7 +411,6 @@ app.post('/api/orders/checkout', (req, res) => {
     }
 
     db.prepare(`INSERT INTO payments (order_id, provider, provider_tx_id, status, amount_cents) VALUES (?, ?, ?, 'PENDING', ?)`).run(orderId, provider || 'USDT_BYBIT', `${provider}-${orderCode}`, totalCents);
-    db.prepare(`UPDATE users SET loyalty_points = loyalty_points + ? WHERE id = ?`).run(earnedPoints, user.id);
 
     db.prepare(`DELETE FROM cart_items WHERE cart_id = ?`).run(cartRes.id);
     db.prepare(`UPDATE carts SET discount_code = NULL WHERE id = ?`).run(cartRes.id);
@@ -523,49 +421,27 @@ app.post('/api/orders/checkout', (req, res) => {
   }
 
   const order = db.prepare(`SELECT * FROM orders WHERE order_code = ?`).get(orderCode);
-  res.json({ success: true, order, totalUSD: centsToDecimalStr(totalCents), conversions: calculateConversions(totalCents) });
+  res.json({
+    success: true,
+    order,
+    totalUSD: centsToDecimalStr(totalCents),
+    conversions,
+    paymentDetails: {
+      provider,
+      usdt_address: '0xYourBybitWalletOrTRC20AddressHere',
+      sbp_phone: '+79252481911',
+      sbp_card: '2200 2479 5577 1879',
+      transfermovil_cup: '9204 1299 7694 7558',
+      transfermovil_mlc: '9760 0390 0983 2477'
+    }
+  });
 });
 
-// Endpoint Admin para Broadcast de Anuncios y Campañas
-app.post('/api/admin/broadcast', async (req, res) => {
-  const { secret, message, imageUrl } = req.body;
-  if (secret !== ADMIN_SECRET) return res.status(403).json({ error: 'No autorizado' });
-  if (!message) return res.status(400).json({ error: 'Mensaje requerido' });
-
-  const users = db.prepare("SELECT telegram_id FROM users WHERE is_blocked = 0").all();
-  let successCount = 0;
-
-  for (const u of users) {
-    let sent = null;
-    const markup = {
-      inline_keyboard: [
-        [{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }],
-        [{ text: '🎁 Ver Cupones Flash', callback_data: 'bot:promo_banner' }]
-      ]
-    };
-
-    if (imageUrl) {
-      sent = await callTelegram('sendPhoto', {
-        chat_id: u.telegram_id,
-        photo: imageUrl,
-        caption: message,
-        parse_mode: 'HTML',
-        reply_markup: markup
-      });
-    } else {
-      sent = await callTelegram('sendMessage', {
-        chat_id: u.telegram_id,
-        text: message,
-        parse_mode: 'HTML',
-        reply_markup: markup
-      });
-    }
-
-    if (sent) successCount++;
-    await new Promise(r => setTimeout(r, 50));
-  }
-
-  res.json({ success: true, totalSent: successCount });
+app.get('/api/orders/:telegramId', (req, res) => {
+  const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(req.params.telegramId);
+  if (!user) return res.json([]);
+  const orders = db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC").all(user.id);
+  res.json(orders);
 });
 
 function centsToDecimalStr(cents) {
@@ -576,5 +452,5 @@ function centsToDecimalStr(cents) {
 }
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket - Servidor de Marketing y Anuncios activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Backend Pro con Bybit API V5 activo en puerto ${PORT}`);
 });
