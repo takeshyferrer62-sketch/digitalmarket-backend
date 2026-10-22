@@ -27,7 +27,7 @@ const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarket-mini-app.vercel.app';
 
 // ID de tu Google Sheet configurado en las Variables de Entorno de Render
-const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || 'https://docs.google.com/spreadsheets/d/1bbUrb5xAxO5I29gnCWq_kFNioXIjQQXxyrWbyncpIhA/edit?gid=0#gid=0'; 
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1bbUrb5xAxO5I29gnCWq_kFNioXIjQQXxyrWbyncpIhA'; 
 
 // Credenciales Bybit API V5
 const BYBIT_API_KEY = process.env.BYBIT_API_KEY || 'A0jigK3XHeIDOVkGgr';
