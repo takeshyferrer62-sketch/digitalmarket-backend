@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET BACKEND API (Catálogo, Cupones Festivos y Scheduler de Canal)
+ * 🌌 DIGITALMARKET BACKEND API (Versión Completa y Definitiva)
  * ============================================================================
  */
 
@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS payments (
 
 db.exec(SCHEMA_SQL);
 
+// Tasas de cambio referenciales
 const EXCHANGE_RATES = {
   RUB: 95.0,
   CUP: 320.0,
@@ -406,9 +407,9 @@ app.post('/api/orders/checkout', (req, res) => {
 class ChannelAutomationScheduler {
   constructor(db) {
     this.db = db;
-    this.botToken = process.env.BOT_TOKEN || '7482910384:AAH_TOKEN_DE_EJEMPLO_REEMPLAZAR_AQUI';
-    this.channelId = process.env.CHANNEL_ID || '@DigitalMarketOfertas'; // Canal configurado
-    this.botUsername = process.env.BOT_USERNAME || 'DigitalMarketBot';
+    this.botToken = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZShApI65XSNw';
+    this.channelId = process.env.CHANNEL_ID || '-1004310833438';
+    this.botUsername = process.env.BOT_USERNAME || 'digitalmarketr_bot';
     this.apiBase = `https://api.telegram.org/bot${this.botToken}`;
   }
 
@@ -467,7 +468,6 @@ class ChannelAutomationScheduler {
   }
 
   startScheduler() {
-    // Publicar a los 10 segundos de arrancar y luego cada 12 horas
     setTimeout(() => { this.triggerAutomatedCampaignPost(); }, 10000);
     setInterval(() => { this.triggerAutomatedCampaignPost(); }, 12 * 60 * 60 * 1000);
     console.log('📢 [ChannelAutomationScheduler] Programador de ofertas y campañas iniciado.');
@@ -478,5 +478,5 @@ const scheduler = new ChannelAutomationScheduler(db);
 scheduler.startScheduler();
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Backend API (Campañas y Canal Oficial) en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Backend API (Versión Completa) en puerto ${PORT}`);
 });
