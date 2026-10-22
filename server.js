@@ -111,7 +111,7 @@ db.exec(SCHEMA_SQL);
 try { db.exec("ALTER TABLE users ADD COLUMN loyalty_points INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
 try { db.exec("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO';"); } catch(e){}
 
-const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
+const EXCHANGE_RATES = { RUB: 110.0, CUP: 830.0, MLC: 615.0, CLASICA: 650.0 };
 
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
