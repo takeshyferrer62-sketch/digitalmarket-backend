@@ -1,7 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO (24/7)
- * (Canal Automation + Bot Marketing/Cupones + Mini App API + Bybit AutoPay)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO CON GOOGLE SHEETS (Inventario Dinámico)
  * ============================================================================
  */
 
@@ -9,7 +8,6 @@
 
 const express = require('express');
 const cors = require('cors');
-const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
@@ -26,9 +24,10 @@ const db = new DatabaseSync(DB_PATH);
 const BOT_TOKEN = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZShApI65XSNw';
 const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/DigitalMarketOfertas';
 const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
-const BOT_USERNAME = process.env.BOT_USERNAME || 'digitalmarketr_bot';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarket-mini-app.vercel.app';
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'Yunier!289';
+
+// ID de tu Google Sheet configurado en las Variables de Entorno de Render
+const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || 'https://docs.google.com/spreadsheets/d/1bbUrb5xAxO5I29gnCWq_kFNioXIjQQXxyrWbyncpIhA/edit?gid=0#gid=0'; 
 
 // Credenciales Bybit API V5
 const BYBIT_API_KEY = process.env.BYBIT_API_KEY || 'A0jigK3XHeIDOVkGgr';
@@ -50,28 +49,6 @@ CREATE TABLE IF NOT EXISTS users (
     loyalty_points INTEGER NOT NULL DEFAULT 0,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
-CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    slug TEXT UNIQUE NOT NULL,
-    name TEXT NOT NULL,
-    product_type TEXT NOT NULL,
-    description TEXT,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS products (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sku TEXT UNIQUE NOT NULL,
-    category_id INTEGER NOT NULL REFERENCES categories(id),
-    name TEXT NOT NULL,
-    description TEXT NOT NULL,
-    image_url TEXT,
-    price_cents INTEGER NOT NULL,
-    price_decimal TEXT NOT NULL,
-    currency TEXT NOT NULL DEFAULT 'USD',
-    product_type TEXT NOT NULL,
-    stock INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1
-);
 CREATE TABLE IF NOT EXISTS carts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER UNIQUE NOT NULL REFERENCES users(id),
@@ -80,7 +57,7 @@ CREATE TABLE IF NOT EXISTS carts (
 CREATE TABLE IF NOT EXISTS cart_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     cart_id INTEGER NOT NULL REFERENCES carts(id) ON DELETE CASCADE,
-    product_id INTEGER NOT NULL REFERENCES products(id),
+    product_id INTEGER NOT NULL,
     quantity INTEGER NOT NULL DEFAULT 1,
     UNIQUE(cart_id, product_id)
 );
@@ -111,7 +88,7 @@ CREATE TABLE IF NOT EXISTS orders (
 CREATE TABLE IF NOT EXISTS order_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    product_id INTEGER NOT NULL REFERENCES products(id),
+    product_id INTEGER NOT NULL,
     product_name TEXT NOT NULL,
     product_type TEXT NOT NULL,
     quantity INTEGER NOT NULL,
@@ -136,52 +113,77 @@ try { db.exec("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAU
 
 const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
 
-function seedDatabaseFull() {
-  try {
-    db.exec('PRAGMA foreign_keys = OFF;');
-    db.exec('BEGIN IMMEDIATE');
-    db.exec("DELETE FROM cart_items");
-    db.exec("DELETE FROM products");
-    db.exec("DELETE FROM categories");
-    db.exec("DELETE FROM discounts");
-
-    db.exec(`INSERT INTO categories (id, slug, name, product_type, description) VALUES (1, 'dig-descargables', 'Artículos Digitales (Telegram Stars ⭐)', 'DIGITAL', 'Cuentas de streaming e IA')`);
-    db.exec(`INSERT INTO categories (id, slug, name, product_type, description) VALUES (2, 'fis-preventa', 'Artículos Físicos (Preventa / Stock)', 'PHYSICAL', 'Gadgets y electrónica')`);
-
-    const allProducts = [
-      ['DIG-STR-001', 1, '[⭐] Cuenta Netflix (Perfil HD/4K)', 'Acceso automatizado.', 1550, '15.50', 'DIGITAL', 999],
-      ['DIG-STR-002', 1, '[⭐] Xuper TV / IPTV Premium (1 Mes)', 'Acceso al mejor contenido en vivo.', 199, '1.99', 'DIGITAL', 999],
-      ['DIG-AI-101', 1, '[⭐] ChatGPT Plus / OpenAI (Acceso Pro)', 'Acceso avanzado con GPT-4o.', 2499, '24.99', 'DIGITAL', 999],
-      ['WB-ELE-001', 2, '[📦] Smartwatch Deportivo Pro', 'Reloj inteligente con monitor cardíaco.', 4500, '45.00', 'PHYSICAL', 10],
-      ['YM-CMP-101', 2, '[📦] SSD NVMe M.2 1TB Alta Velocidad', 'Unidad de estado sólido 3500 MB/s.', 6800, '68.00', 'PHYSICAL', 15]
-    ];
-
-    const prodStmt = db.prepare(`INSERT INTO products (sku, category_id, name, description, price_cents, price_decimal, currency, product_type, stock, is_active) VALUES (?, ?, ?, ?, ?, ?, 'USD', ?, ?, 1)`);
-    for (const [sku, catId, name, desc, cents, dec, type, stock] of allProducts) { prodStmt.run(sku, catId, name, desc, cents, dec, type, stock); }
-
-    const discountsSeed = [
-      ['MAMAS20', 20, 2, 'Día de la Madre (Mayo)', '1,2,3,4,5,6,7,8,9,10,11,12'],
-      ['XMAS30', 30, 3, 'Navidad (Diciembre)', '1,2,3,4,5,6,7,8,9,10,11,12'],
-      ['BLACKFRIDAY35', 35, 3, 'Black Friday (Noviembre)', '1,2,3,4,5,6,7,8,9,10,11,12']
-    ];
-
-    const discStmt = db.prepare(`INSERT INTO discounts (code, percent_off, min_items, max_uses, used_count, festival_name, valid_months, is_active) VALUES (?, ?, ?, 1000, 0, ?, ?, 1)`);
-    for (const [code, pct, minIt, festName, months] of discountsSeed) { discStmt.run(code, pct, minIt, festName, months); }
-
-    db.exec('COMMIT');
-    db.exec('PRAGMA foreign_keys = ON;');
-  } catch (err) { db.exec('ROLLBACK'); db.exec('PRAGMA foreign_keys = ON;'); }
-}
-
-seedDatabaseFull();
-
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
   return { RUB: (usdVal * EXCHANGE_RATES.RUB).toFixed(2), CUP: (usdVal * EXCHANGE_RATES.CUP).toFixed(2), MLC: (usdVal * EXCHANGE_RATES.MLC).toFixed(2), CLASICA: (usdVal * EXCHANGE_RATES.CLASICA).toFixed(2) };
 }
 
 // ============================================================================
-// 📢 SCHEDULER DE CANAL (Publicación automática cada 12 horas)
+// 📊 LECTOR DINÁMICO DE GOOGLE SHEETS PARA EL CATÁLOGO
+// ============================================================================
+
+async function fetchProductsFromGoogleSheet() {
+  if (!GOOGLE_SHEET_ID) {
+    // Productos por defecto si no se ha configurado la hoja aún
+    return [
+      { id: 1, sku: 'DIG-STR-001', name: '[⭐] Cuenta Netflix (Perfil HD/4K)', description: 'Acceso automatizado.', price_cents: 1550, price_decimal: '15.50', currency: 'USD', product_type: 'DIGITAL', stock: 999, is_active: 1 },
+      { id: 2, sku: 'WB-ELE-001', name: '[📦] Smartwatch Deportivo Pro', description: 'Reloj inteligente con monitor cardíaco.', price_cents: 4500, price_decimal: '45.00', currency: 'USD', product_type: 'PHYSICAL', stock: 10, is_active: 1 }
+    ];
+  }
+
+  try {
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
+    const res = await fetch(csvUrl);
+    const csvText = await res.text();
+    const rows = csvText.split('\n').map(r => r.split(','));
+    
+    if (rows.length < 2) return [];
+
+    const headers = rows[0].map(h => h.trim().toLowerCase());
+    const products = [];
+
+    for (let i = 1; i < rows.length; i++) {
+      const cols = rows[i];
+      if (cols.length < headers.length) continue;
+
+      const p = {};
+      headers.forEach((h, index) => {
+        p[h] = cols[index] ? cols[index].trim().replace(/^"|"$/g, '') : '';
+      });
+
+      if (p.is_active == '1' || p.is_active.toLowerCase() === 'true') {
+        products.push({
+          id: Number(p.id) || i,
+          sku: p.sku || `SKU-${i}`,
+          name: p.name || 'Producto sin nombre',
+          description: p.description || '',
+          price_cents: Number(p.price_cents) || 100,
+          price_decimal: p.price_decimal || '1.00',
+          currency: 'USD',
+          product_type: (p.product_type || 'DIGITAL').toUpperCase(),
+          stock: Number(p.stock) || 100,
+          is_active: 1
+        });
+      }
+    }
+    return products;
+  } catch (err) {
+    console.error('❌ Error leyendo Google Sheet:', err.message);
+    return [];
+  }
+}
+
+// Seed de cupones y descuentos fijos
+function seedDiscounts() {
+  try {
+    db.exec(`INSERT OR IGNORE INTO discounts (code, percent_off, min_items, festival_name, valid_months) VALUES ('MAMAS20', 20, 2, 'Día de la Madre', '1,2,3,4,5,6,7,8,9,10,11,12')`);
+    db.exec(`INSERT OR IGNORE INTO discounts (code, percent_off, min_items, festival_name, valid_months) VALUES ('XMAS30', 30, 3, 'Navidad', '1,2,3,4,5,6,7,8,9,10,11,12')`);
+  } catch (e) {}
+}
+seedDiscounts();
+
+// ============================================================================
+// 📢 SCHEDULER DE CANAL
 // ============================================================================
 
 async function callTelegram(method, payload = {}) {
@@ -198,20 +200,15 @@ async function callTelegram(method, payload = {}) {
 }
 
 class ChannelAutomationScheduler {
-  constructor(db) { this.db = db; }
   async triggerAutomatedCampaignPost() {
-    const activeDiscount = this.db.prepare("SELECT * FROM discounts WHERE is_active = 1 LIMIT 1").get();
-    const featuredProduct = this.db.prepare("SELECT * FROM products WHERE is_active = 1 ORDER BY RANDOM() LIMIT 1").get();
+    const products = await fetchProductsFromGoogleSheet();
+    const featured = products[Math.floor(Math.random() * products.length)] || products[0];
 
-    let message = `🎉 <b>¡OFERTA ESPECIAL Y CAMPAÑA EN DIGITALMARKET!</b> 🎉\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-    if (activeDiscount) {
-      message += `✨ <b>Campaña Activa: ${activeDiscount.festival_name}</b>\n`;
-      message += `▫️ Llévate un <b>${activeDiscount.percent_off}% de descuento</b> aplicando el código: <code>${activeDiscount.code}</code>\n\n`;
+    let message = `🎉 <b>¡OFERTA ESPECIAL EN DIGITALMARKET!</b> 🎉\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+    if (featured) {
+      message += `🔥 <b>Producto Destacado:</b>\n▫️ <b>${featured.name}</b> — <b>${featured.price_decimal} USD</b>\n<i>${featured.description}</i>\n\n`;
     }
-    if (featuredProduct) {
-      message += `🔥 <b>Producto Destacado:</b>\n▫️ <b>${featuredProduct.name}</b> — <b>${featuredProduct.price_decimal} USD</b>\n\n`;
-    }
-    message += '🛒 ¡Haz clic abajo para abrir la tienda y canjear tus cupones! 👇';
+    message += '🛒 ¡Haz clic abajo para abrir la tienda y comprar! 👇';
     
     await callTelegram('sendMessage', {
       chat_id: CHANNEL_ID,
@@ -221,105 +218,10 @@ class ChannelAutomationScheduler {
     });
   }
   startScheduler() {
-    setTimeout(() => { this.triggerAutomatedCampaignPost(); }, 15000);
     setInterval(() => { this.triggerAutomatedCampaignPost(); }, 12 * 60 * 60 * 1000);
-    console.log('📢 [ChannelAutomationScheduler] Programador de canal iniciado (cada 12h).');
   }
 }
-
-new ChannelAutomationScheduler(db).startScheduler();
-
-// ============================================================================
-// 🤖 BOT DE TELEGRAM (Anuncios, Cupones Interactivos y WebApp)
-// ============================================================================
-
-async function handleTelegramUpdate(u) {
-  if (u.pre_checkout_query) {
-    await callTelegram('answerPreCheckoutQuery', { pre_checkout_query_id: u.pre_checkout_query.id, ok: true });
-    return;
-  }
-  if (u.message && u.message.successful_payment) {
-    await callTelegram('sendMessage', { chat_id: u.message.chat.id, text: `✅ ¡Pago con Telegram Stars recibido con éxito!` });
-    return;
-  }
-  if (u.message && u.message.text) {
-    const msg = u.message;
-    const chatId = msg.chat.id;
-    const telegramId = msg.from.id;
-    const text = msg.text.trim();
-
-    let referredById = null;
-    if (text.startsWith('/start ref_')) {
-      const refCode = text.replace('/start ', '').trim();
-      const referrer = db.prepare("SELECT id FROM users WHERE referral_code = ?").get(refCode);
-      if (referrer) referredById = referrer.id;
-    }
-
-    let existingUser = db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId);
-    if (!existingUser) {
-      db.prepare(`INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) VALUES (?, ?, ?, ?, ?)`).run(telegramId, msg.from.username || null, [msg.from.first_name, msg.from.last_name].filter(Boolean).join(' '), referredById, `ref_${telegramId}`);
-    }
-
-    if (text.startsWith('/start') || text.startsWith('/menu')) {
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: `🌌 <b>¡Bienvenido a DigitalMarket Oficial!</b> 🚀\n\nTodo nuestro catálogo, pagos y referidos operan en nuestra ultrarrápida <b>Mini App</b>.\n\n🔥 <i>Explora preventas, cuentas digitales y cupones activos.</i>`,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }],
-            [{ text: '🎁 Ver Cupones y Campañas Activas', callback_data: 'bot:promo_banner' }],
-            [{ text: '🏆 Logros y Comunidad', callback_data: 'bot:success_story' }]
-          ]
-        }
-      });
-    }
-  } else if (u.callback_query) {
-    const cb = u.callback_query;
-    const chatId = cb.message.chat.id;
-    const data = cb.data;
-
-    if (data === 'bot:promo_banner') {
-      const activeDiscounts = db.prepare("SELECT * FROM discounts WHERE is_active = 1").all();
-      let text = `🎁 <b>¡Cupones y Campañas Flash Disponibles!</b>\n━━━━━━━━━━━━━━━━━━━━\n`;
-      for (const d of activeDiscounts) {
-        text += `✨ <b>${d.festival_name}</b>\n   ▫️ Código: <code>${d.code}</code>\n   ▫️ Descuento: <b>${d.percent_off}% OFF</b>\n\n`;
-      }
-      text += `💡 <i>Copia tu código y utilízalo al pagar en la Mini App.</i>`;
-
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: [[{ text: '🛍️ Ir a Comprar en la Mini App', web_app: { url: WEB_APP_URL } }], [{ text: '⬅️ Menú Principal', callback_data: 'bot:home' }]] }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    } else if (data === 'bot:success_story') {
-      const text = `🏆 <b>¡Logros y Testimonios de la Comunidad!</b>\n━━━━━━━━━━━━━━━━━━━━\n\n📦 Más de <b>500+ envíos y entregas digitales</b> realizadas con éxito.\n⭐ Pagos con USDT, Stars, SBP y Transfermóvil.`;
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: [[{ text: '🚀 Abrir Mini App', web_app: { url: WEB_APP_URL } }], [{ text: '⬅️ Menú Principal', callback_data: 'bot:home' }]] }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    } else if (data === 'bot:home') {
-      await callTelegram('sendMessage', {
-        chat_id: chatId,
-        text: `🌌 <b>Menú Principal - DigitalMarket</b>`,
-        parse_mode: 'HTML',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }],
-            [{ text: '🎁 Ver Cupones y Campañas Activas', callback_data: 'bot:promo_banner' }],
-            [{ text: '🏆 Logros y Comunidad', callback_data: 'bot:success_story' }]
-          ]
-        }
-      });
-      await callTelegram('answerCallbackQuery', { callback_query_id: cb.id });
-    }
-  }
-}
+new ChannelAutomationScheduler().startScheduler();
 
 // ============================================================================
 // ⚡ BYBIT AUTO-PAY CHECKER
@@ -357,8 +259,16 @@ setInterval(checkBybitDeposits, 2 * 60 * 1000);
 // ============================================================================
 
 app.post('/api/telegram-webhook', async (req, res) => {
-  try { await handleTelegramUpdate(req.body); res.status(200).json({ ok: true }); }
-  catch (err) { res.status(500).json({ error: err.message }); }
+  const update = req.body;
+  if (update.message && (update.message.text?.startsWith('/start') || update.message.text?.startsWith('/menu'))) {
+    await callTelegram('sendMessage', {
+      chat_id: update.message.chat.id,
+      text: `🌌 <b>¡Bienvenido a DigitalMarket Oficial!</b> 🚀\n\nTodo nuestro catálogo y compras operan en nuestra Mini App.`,
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: [[{ text: '🛍️ Abrir Tienda (Mini App)', web_app: { url: WEB_APP_URL } }]] }
+    });
+  }
+  res.status(200).json({ ok: true });
 });
 
 app.post('/api/users/sync', (req, res) => {
@@ -367,8 +277,9 @@ app.post('/api/users/sync', (req, res) => {
   res.json({ success: true, user: db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId) });
 });
 
-app.get('/api/products', (req, res) => {
-  const products = db.prepare("SELECT * FROM products WHERE is_active = 1").all();
+// Endpoint que alimenta la Mini App leyendo directamente de Google Sheets
+app.get('/api/products', async (req, res) => {
+  const products = await fetchProductsFromGoogleSheet();
   res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
 });
 
@@ -379,20 +290,40 @@ app.post('/api/cart/apply-coupon', (req, res) => {
     const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
     const disc = db.prepare(`SELECT * FROM discounts WHERE code = ? AND is_active = 1`).get(cleanCode);
     if (!disc) throw new Error('Cupón inválido');
-    const cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
+    let cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
+    if (!cart) { db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id); cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id); }
     db.prepare(`UPDATE carts SET discount_code = ? WHERE id = ?`).run(cleanCode, cart.id);
     res.json({ success: true, discount: disc });
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
-app.get('/api/cart/:telegramId', (req, res) => {
+app.get('/api/cart/:telegramId', async (req, res) => {
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(req.params.telegramId);
   if (!user) return res.json({ items: [], subtotalCents: 0, totalCents: 0 });
   let cart = db.prepare(`SELECT * FROM carts WHERE user_id = ?`).get(user.id);
   if (!cart) { db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id); cart = db.prepare(`SELECT * FROM carts WHERE user_id = ?`).get(user.id); }
 
-  const items = db.prepare(`SELECT ci.quantity, p.id AS product_id, p.name, p.price_cents, p.price_decimal, p.product_type FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?`).all(cart.id);
-  let subtotalCents = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
+  const cartItems = db.prepare(`SELECT product_id, quantity FROM cart_items WHERE cart_id = ?`).all(cart.id);
+  const allProducts = await fetchProductsFromGoogleSheet();
+
+  const items = [];
+  let subtotalCents = 0;
+  for (const ci of cartItems) {
+    const prod = allProducts.find(p => p.id === ci.product_id);
+    if (prod) {
+      subtotalCents += prod.price_cents * ci.quantity;
+      items.push({
+        product_id: prod.id,
+        name: prod.name,
+        price_cents: prod.price_cents,
+        price_decimal: prod.price_decimal,
+        quantity: ci.quantity,
+        total_usd: (prod.price_cents * ci.quantity / 100).toFixed(2),
+        conversions: calculateConversions(prod.price_cents * ci.quantity)
+      });
+    }
+  }
+
   let discountCents = 0;
   let totalItems = items.reduce((acc, i) => acc + i.quantity, 0);
 
@@ -403,10 +334,10 @@ app.get('/api/cart/:telegramId', (req, res) => {
 
   const totalCents = Math.max(0, subtotalCents - discountCents);
   res.json({
-    items: items.map(i => ({ ...i, total_usd: (i.price_cents * i.quantity / 100).toFixed(2), conversions: calculateConversions(i.price_cents * i.quantity) })),
+    items,
     subtotalCents,
-    totalUSD: centsToDecimalStr(totalCents),
-    discountUSD: centsToDecimalStr(discountCents),
+    totalUSD: (totalCents / 100).toFixed(2),
+    discountUSD: (discountCents / 100).toFixed(2),
     discountCode: cart.discount_code,
     conversions: calculateConversions(totalCents),
     totalItems
@@ -426,9 +357,19 @@ app.post('/api/orders/checkout', async (req, res) => {
   const { telegramId, provider } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
   const cartRes = db.prepare(`SELECT id, discount_code FROM carts WHERE user_id = ?`).get(user.id);
-  const items = db.prepare(`SELECT ci.quantity, p.id AS product_id, p.name, p.price_cents, p.product_type FROM cart_items ci JOIN products p ON p.id = ci.product_id WHERE ci.cart_id = ?`).all(cartRes.id);
+  const cartItems = db.prepare(`SELECT product_id, quantity FROM cart_items WHERE cart_id = ?`).all(cartRes.id);
+  const allProducts = await fetchProductsFromGoogleSheet();
 
-  let subtotalCents = items.reduce((acc, i) => acc + i.price_cents * i.quantity, 0);
+  let subtotalCents = 0;
+  const items = [];
+  for (const ci of cartItems) {
+    const prod = allProducts.find(p => p.id === ci.product_id);
+    if (prod) {
+      subtotalCents += prod.price_cents * ci.quantity;
+      items.push({ ...prod, quantity: ci.quantity });
+    }
+  }
+
   let discountCents = 0;
   let totalItems = items.reduce((acc, i) => acc + i.quantity, 0);
 
@@ -440,7 +381,16 @@ app.post('/api/orders/checkout', async (req, res) => {
   const totalCents = Math.max(0, subtotalCents - discountCents);
   const orderCode = `DM-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 
-  db.prepare(`INSERT INTO orders (order_code, user_id, status, subtotal_cents, discount_cents, total_cents, currency, discount_code, shipping_status) VALUES (?, ?, 'PENDING_PAYMENT', ?, ?, ?, 'USD', ?, 'PREPARANDO_ENVIO')`).run(orderCode, user.id, subtotalCents, discountCents, totalCents, cartRes.discount_code);
+  const ordIns = db.prepare(`INSERT INTO orders (order_code, user_id, status, subtotal_cents, discount_cents, total_cents, currency, discount_code, shipping_status) VALUES (?, ?, 'PENDING_PAYMENT', ?, ?, ?, 'USD', ?, 'PREPARANDO_ENVIO')`).run(orderCode, user.id, subtotalCents, discountCents, totalCents, cartRes.discount_code);
+  const orderId = ordIns.lastInsertRowid;
+
+  const itemStmt = db.prepare(`INSERT INTO order_items (order_id, product_id, product_name, product_type, quantity, unit_price_cents, line_total_cents) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+  for (const item of items) {
+    itemStmt.run(orderId, item.id, item.name, item.product_type, item.quantity, item.price_cents, item.price_cents * item.quantity);
+  }
+
+  db.prepare(`INSERT INTO payments (order_id, provider, provider_tx_id, status, amount_cents) VALUES (?, ?, ?, 'PENDING', ?)`).run(orderId, provider || 'USDT_BYBIT', `${provider}-${orderCode}`, totalCents);
+
   db.prepare(`DELETE FROM cart_items WHERE cart_id = ?`).run(cartRes.id);
   db.prepare(`UPDATE carts SET discount_code = NULL WHERE id = ?`).run(cartRes.id);
 
@@ -458,7 +408,7 @@ app.post('/api/orders/checkout', async (req, res) => {
     });
   }
 
-  res.json({ success: true, order, totalUSD: centsToDecimalStr(totalCents), conversions: calculateConversions(totalCents) });
+  res.json({ success: true, order, totalUSD: (totalCents / 100).toFixed(2), conversions: calculateConversions(totalCents) });
 });
 
 app.get('/api/orders/:telegramId', (req, res) => {
@@ -467,11 +417,6 @@ app.get('/api/orders/:telegramId', (req, res) => {
   res.json(db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC").all(user.id));
 });
 
-function centsToDecimalStr(cents) {
-  const n = Number(cents);
-  return `${Math.floor(Math.abs(n) / 100)}.${String(Math.abs(n) % 100).padStart(2, '0')}`;
-}
-
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Maestro Server activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket con Google Sheets activo en puerto ${PORT}`);
 });
