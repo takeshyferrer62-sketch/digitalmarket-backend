@@ -26,7 +26,6 @@ const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/D
 const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarket-mini-app.vercel.app';
 
-// ID de tu Google Sheet configurado en las Variables de Entorno de Render
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1bbUrb5xAxO5I29gnCWq_kFNioXIjQQXxyrWbyncpIhA'; 
 
 // Credenciales Bybit API V5
@@ -35,7 +34,7 @@ const BYBIT_API_SECRET = process.env.BYBIT_API_SECRET || 'xvBwjKohgZ8pKcz7Dac5zz
 const BYBIT_BASE_URL = 'https://api.bybit.com';
 
 const SCHEMA_SQL = `
-PRAGMA foreign_keys = ON;
+PRAGMA foreign_keys = OFF;
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER UNIQUE NOT NULL,
@@ -111,7 +110,7 @@ db.exec(SCHEMA_SQL);
 try { db.exec("ALTER TABLE users ADD COLUMN loyalty_points INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
 try { db.exec("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO';"); } catch(e){}
 
-const EXCHANGE_RATES = { RUB: 110.0, CUP: 830.0, MLC: 615.0, CLASICA: 650.0 };
+const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
 
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
@@ -124,7 +123,6 @@ function calculateConversions(centsUSD) {
 
 async function fetchProductsFromGoogleSheet() {
   if (!GOOGLE_SHEET_ID) {
-    // Productos por defecto si no se ha configurado la hoja aún
     return [
       { id: 1, sku: 'DIG-STR-001', name: '[⭐] Cuenta Netflix (Perfil HD/4K)', description: 'Acceso automatizado.', price_cents: 1550, price_decimal: '15.50', currency: 'USD', product_type: 'DIGITAL', stock: 999, is_active: 1 },
       { id: 2, sku: 'WB-ELE-001', name: '[📦] Smartwatch Deportivo Pro', description: 'Reloj inteligente con monitor cardíaco.', price_cents: 4500, price_decimal: '45.00', currency: 'USD', product_type: 'PHYSICAL', stock: 10, is_active: 1 }
@@ -173,7 +171,6 @@ async function fetchProductsFromGoogleSheet() {
   }
 }
 
-// Seed de cupones y descuentos fijos
 function seedDiscounts() {
   try {
     db.exec(`INSERT OR IGNORE INTO discounts (code, percent_off, min_items, festival_name, valid_months) VALUES ('MAMAS20', 20, 2, 'Día de la Madre', '1,2,3,4,5,6,7,8,9,10,11,12')`);
@@ -277,7 +274,6 @@ app.post('/api/users/sync', (req, res) => {
   res.json({ success: true, user: db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId) });
 });
 
-// Endpoint que alimenta la Mini App leyendo directamente de Google Sheets
 app.get('/api/products', async (req, res) => {
   const products = await fetchProductsFromGoogleSheet();
   res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
@@ -347,8 +343,11 @@ app.get('/api/cart/:telegramId', async (req, res) => {
 app.post('/api/cart/add', (req, res) => {
   const { telegramId, productId, quantity = 1 } = req.body;
   const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+
   let cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
   if (!cart) { db.prepare(`INSERT INTO carts (user_id) VALUES (?)`).run(user.id); cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id); }
+  
   db.prepare(`INSERT INTO cart_items (cart_id, product_id, quantity) VALUES (?, ?, ?) ON CONFLICT(cart_id, product_id) DO UPDATE SET quantity = quantity + ?`).run(cart.id, productId, quantity, quantity);
   res.json({ success: true });
 });
