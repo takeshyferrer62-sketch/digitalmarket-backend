@@ -133,7 +133,7 @@ safeAddColumn("ALTER TABLE users ADD COLUMN membership_expires_at TEXT;");
 safeAddColumn("ALTER TABLE users ADD COLUMN referral_code TEXT;");
 safeAddColumn("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO';");
 
-const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
+const EXCHANGE_RATES = { RUB: 110.0, CUP: 830.0, MLC: 625.0, CLASICA: 630.0 };
 
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
