@@ -1,6 +1,7 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO CON GOOGLE SHEETS (Inventario Dinámico)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO V2 (24/7)
+ * (Google Sheets + Carrito Item Quitar + Pedidos Borrar + Soporte + Billetera + Perfil)
  * ============================================================================
  */
 
@@ -40,6 +41,9 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER UNIQUE NOT NULL,
     username TEXT,
     full_name TEXT NOT NULL,
+    phone TEXT,
+    address TEXT,
+    payment_method TEXT,
     marketing_opt_in INTEGER NOT NULL DEFAULT 1,
     is_blocked INTEGER NOT NULL DEFAULT 0,
     referred_by INTEGER,
@@ -103,12 +107,22 @@ CREATE TABLE IF NOT EXISTS payments (
     amount_cents INTEGER NOT NULL,
     txid_proof TEXT
 );
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    subject TEXT NOT NULL,
+    message TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'OPEN',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 db.exec(SCHEMA_SQL);
 
-try { db.exec("ALTER TABLE users ADD COLUMN loyalty_points INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
-try { db.exec("ALTER TABLE orders ADD COLUMN shipping_status TEXT NOT NULL DEFAULT 'PREPARANDO_ENVIO';"); } catch(e){}
+try { db.exec("ALTER TABLE users ADD COLUMN phone TEXT;"); } catch(e){}
+try { db.exec("ALTER TABLE users ADD COLUMN address TEXT;"); } catch(e){}
+try { db.exec("ALTER TABLE users ADD COLUMN payment_method TEXT;"); } catch(e){}
+try { db.exec("ALTER TABLE users ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
 
 const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
 
@@ -133,7 +147,8 @@ async function fetchProductsFromGoogleSheet() {
     const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
     const res = await fetch(csvUrl);
     const csvText = await res.text();
-    const rows = csvText.split('\n').map(r => r.split(','));
+    const rows = csvText.split('
+').map(r => r.split(','));
     
     if (rows.length < 2) return [];
 
@@ -274,6 +289,21 @@ app.post('/api/users/sync', (req, res) => {
   res.json({ success: true, user: db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId) });
 });
 
+app.post('/api/users/info', (req, res) => {
+  const { telegramId, fullName, phone, address, payment } = req.body;
+  db.prepare(`UPDATE users SET full_name = ?, phone = ?, address = ?, payment_method = ? WHERE telegram_id = ?`).run(fullName, phone, address, payment, telegramId);
+  res.json({ success: true });
+});
+
+app.post('/api/support', (req, res) => {
+  const { telegramId, subject, message } = req.body;
+  const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+
+  db.prepare(`INSERT INTO support_tickets (user_id, subject, message) VALUES (?, ?, ?)`).run(user.id, subject, message);
+  res.json({ success: true });
+});
+
 app.get('/api/products', async (req, res) => {
   const products = await fetchProductsFromGoogleSheet();
   res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
@@ -352,6 +382,17 @@ app.post('/api/cart/add', (req, res) => {
   res.json({ success: true });
 });
 
+app.delete('/api/cart/item', (req, res) => {
+  const { telegramId, productId } = req.body;
+  const user = db.prepare(`SELECT id FROM users WHERE telegram_id = ?`).get(telegramId);
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+  const cart = db.prepare(`SELECT id FROM carts WHERE user_id = ?`).get(user.id);
+  if (cart) {
+    db.prepare(`DELETE FROM cart_items WHERE cart_id = ? AND product_id = ?`).run(cart.id, productId);
+  }
+  res.json({ success: true });
+});
+
 app.post('/api/orders/checkout', async (req, res) => {
   const { telegramId, provider } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
@@ -416,6 +457,27 @@ app.get('/api/orders/:telegramId', (req, res) => {
   res.json(db.prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC").all(user.id));
 });
 
+app.delete('/api/orders/:orderId', (req, res) => {
+  const orderId = req.params.orderId;
+  db.prepare("DELETE FROM order_items WHERE order_id = ?").run(orderId);
+  db.prepare("DELETE FROM payments WHERE order_id = ?").run(orderId);
+  db.prepare("DELETE FROM orders WHERE id = ?").run(orderId);
+  res.json({ success: true });
+});
+
+app.delete('/api/orders/all/:telegramId', (req, res) => {
+  const user = db.prepare("SELECT id FROM users WHERE telegram_id = ?").get(req.params.telegramId);
+  if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
+  
+  const userOrders = db.prepare("SELECT id FROM orders WHERE user_id = ?").all(user.id);
+  for (const ord of userOrders) {
+    db.prepare("DELETE FROM order_items WHERE order_id = ?").run(ord.id);
+    db.prepare("DELETE FROM payments WHERE order_id = ?").run(ord.id);
+  }
+  db.prepare("DELETE FROM orders WHERE user_id = ?").run(user.id);
+  res.json({ success: true });
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket con Google Sheets activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Maestro V2 activo en puerto ${PORT}`);
 });
