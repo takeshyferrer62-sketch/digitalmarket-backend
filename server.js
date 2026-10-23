@@ -1,7 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO DEFINITIVO (V7)
- * (Google Sheets + Billetera + Membresías + Referidos + Todos los Pagos: CUP, MLC, CLASICA, SBP, USDT, Stars)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO SEGURO (V8)
  * ============================================================================
  */
 
@@ -26,7 +25,6 @@ const BOT_TOKEN = process.env.BOT_TOKEN || '8743289252:AAFkSdl8O8VtQlvkRpnvHbwZS
 const OFFICIAL_CHANNEL_URL = process.env.OFFICIAL_CHANNEL_URL || 'https://t.me/DigitalMarketOfertas';
 const CHANNEL_ID = process.env.CHANNEL_ID || '-1004310833438';
 const WEB_APP_URL = process.env.WEB_APP_URL || 'https://digitalmarket-mini-app.vercel.app';
-
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID || '1bbUrb5xAxO5I29gnCWq_kFNioXIjQQXxyrWbyncpIhA'; 
 
 // Credenciales Bybit API V5
@@ -121,19 +119,20 @@ CREATE TABLE IF NOT EXISTS support_tickets (
 
 db.exec(SCHEMA_SQL);
 
-try { db.exec("ALTER TABLE users ADD COLUMN phone TEXT;"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN address TEXT;"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN payment_method TEXT;"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN membership_plan TEXT NOT NULL DEFAULT 'FREE';"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT;"); } catch(e){}
-
-const EXCHANGE_RATES = {
-  RUB: 110.0,
-  CUP: 830.0,
-  MLC: 625.0,
-  CLASICA: 630.0
+// Migraciones seguras en bloques try/catch independientes
+const safeAddColumn = (sql) => {
+  try { db.exec(sql); } catch (e) {}
 };
+
+safeAddColumn("ALTER TABLE users ADD COLUMN phone TEXT;");
+safeAddColumn("ALTER TABLE users ADD COLUMN address TEXT;");
+safeAddColumn("ALTER TABLE users ADD COLUMN payment_method TEXT;");
+safeAddColumn("ALTER TABLE users ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0;");
+safeAddColumn("ALTER TABLE users ADD COLUMN membership_plan TEXT NOT NULL DEFAULT 'FREE';");
+safeAddColumn("ALTER TABLE users ADD COLUMN membership_expires_at TEXT;");
+safeAddColumn("ALTER TABLE users ADD COLUMN referral_code TEXT;");
+
+const EXCHANGE_RATES = { RUB: 110.0, CUP: 830.0, MLC: 625.0, CLASICA: 630.0 };
 
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
@@ -144,10 +143,6 @@ function calculateConversions(centsUSD) {
     CLASICA: (usdVal * EXCHANGE_RATES.CLASICA).toFixed(2)
   };
 }
-
-// ============================================================================
-// 📊 LECTOR DINÁMICO DE GOOGLE SHEETS
-// ============================================================================
 
 async function fetchProductsFromGoogleSheet() {
   if (!GOOGLE_SHEET_ID) {
@@ -222,23 +217,9 @@ async function fetchProductsFromGoogleSheet() {
   }
 }
 
-function seedDiscounts() {
-  try {
-    db.exec(`INSERT OR IGNORE INTO discounts (code, percent_off, min_items, festival_name, valid_months) VALUES ('MAMAS20', 20, 2, 'Día de la Madre', '1,2,3,4,5,6,7,8,9,10,11,12')`);
-    db.exec(`INSERT OR IGNORE INTO discounts (code, percent_off, min_items, festival_name, valid_months) VALUES ('XMAS30', 30, 3, 'Navidad', '1,2,3,4,5,6,7,8,9,10,11,12')`);
-  } catch (e) {}
-}
-seedDiscounts();
+// Endpoints Express
+app.post('/api/telegram-webhook', async (req, res) => { res.status(200).json({ ok: true }); });
 
-// ============================================================================
-// 🌐 ENDPOINTS EXPRESS
-// ============================================================================
-
-app.post('/api/telegram-webhook', async (req, res) => {
-  res.status(200).json({ ok: true });
-});
-
-// Sincronización de usuario con sistema de referidos
 app.post('/api/users/sync', (req, res) => {
   const { telegramId, fullName, username, refCode } = req.body;
   if (!telegramId) return res.status(400).json({ error: 'telegramId requerido' });
@@ -250,11 +231,13 @@ app.post('/api/users/sync', (req, res) => {
   }
 
   const generatedRefCode = `ref_${telegramId}`;
-  db.prepare(`
-    INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) 
-    VALUES (?, ?, ?, ?, ?) 
-    ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name
-  `).run(telegramId, username, fullName, referredById, generatedRefCode);
+  try {
+    db.prepare(`
+      INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) 
+      VALUES (?, ?, ?, ?, ?) 
+      ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name
+    `).run(telegramId, username, fullName, referredById, generatedRefCode);
+  } catch (err) {}
 
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
   res.json({ success: true, user });
@@ -266,7 +249,6 @@ app.post('/api/users/info', (req, res) => {
   res.json({ success: true });
 });
 
-// Solicitud de recarga de billetera (Genera ticket/orden pendiente o instrucción)
 app.post('/api/wallet/deposit', (req, res) => {
   const { telegramId, amountUSD, paymentMethod, txProof } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
@@ -275,17 +257,15 @@ app.post('/api/wallet/deposit', (req, res) => {
   const amountCents = Math.round(Number(amountUSD) * 100);
   if (isNaN(amountCents) || amountCents <= 0) return res.status(400).json({ error: 'Monto inválido' });
 
-  // Guardamos un ticket de soporte o pago para revisión de recarga
   db.prepare(`INSERT INTO support_tickets (user_id, subject, message) VALUES (?, ?, ?)`).run(
     user.id, 
     `Recarga de Billetera: $${amountUSD} USD vía ${paymentMethod}`, 
     `Comprobante/TXID: ${txProof || 'Pendiente de confirmación'}`
   );
 
-  res.json({ success: true, message: 'Solicitud de recarga registrada. El saldo se acreditará tras verificar el pago.' });
+  res.json({ success: true, message: 'Solicitud de recarga registrada.' });
 });
 
-// Membresía mensual
 app.post('/api/membership/upgrade', (req, res) => {
   const { telegramId, plan } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
@@ -295,7 +275,7 @@ app.post('/api/membership/upgrade', (req, res) => {
   const costCents = Math.round(costUSD * 100);
 
   if (user.balance_cents < costCents) {
-    return res.status(400).json({ error: 'Saldo insuficiente en tu billetera para adquirir esta membresía.' });
+    return res.status(400).json({ error: 'Saldo insuficiente en tu billetera.' });
   }
 
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -316,11 +296,7 @@ app.post('/api/support', (req, res) => {
 
 app.get('/api/products', async (req, res) => {
   const products = await fetchProductsFromGoogleSheet();
-  res.json(products.map(p => ({
-    ...p,
-    price_usd: p.price_decimal,
-    conversions: calculateConversions(p.price_cents)
-  })));
+  res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
 });
 
 app.post('/api/cart/apply-coupon', (req, res) => {
@@ -463,7 +439,7 @@ app.post('/api/orders/checkout', async (req, res) => {
     finalTotalCents = Math.max(0, subtotalAfterCoupon - walletIncentiveCents);
 
     if (user.balance_cents < finalTotalCents) {
-      return res.status(400).json({ error: 'Saldo insuficiente en tu billetera virtual. Recarga fondos.' });
+      return res.status(400).json({ error: 'Saldo insuficiente en tu billetera virtual.' });
     }
   }
 
@@ -522,5 +498,5 @@ app.delete('/api/orders/all/:telegramId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Servidor Maestro V7 activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Maestro V8 activo en puerto ${PORT}`);
 });
