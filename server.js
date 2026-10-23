@@ -1,6 +1,7 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO V6 (Con Billetera + Membresías + Descuentos)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO DEFINITIVO (V7)
+ * (Google Sheets + Billetera + Membresías + Referidos + Todos los Pagos: CUP, MLC, CLASICA, SBP, USDT, Stars)
  * ============================================================================
  */
 
@@ -43,7 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone TEXT,
     address TEXT,
     payment_method TEXT,
-    membership_plan TEXT NOT NULL DEFAULT 'FREE', -- FREE, STANDARD, PREMIUM
+    membership_plan TEXT NOT NULL DEFAULT 'FREE',
     membership_expires_at TEXT,
     marketing_opt_in INTEGER NOT NULL DEFAULT 1,
     is_blocked INTEGER NOT NULL DEFAULT 0,
@@ -125,13 +126,23 @@ try { db.exec("ALTER TABLE users ADD COLUMN address TEXT;"); } catch(e){}
 try { db.exec("ALTER TABLE users ADD COLUMN payment_method TEXT;"); } catch(e){}
 try { db.exec("ALTER TABLE users ADD COLUMN balance_cents INTEGER NOT NULL DEFAULT 0;"); } catch(e){}
 try { db.exec("ALTER TABLE users ADD COLUMN membership_plan TEXT NOT NULL DEFAULT 'FREE';"); } catch(e){}
-try { db.exec("ALTER TABLE users ADD COLUMN membership_expires_at TEXT;"); } catch(e){}
+try { db.exec("ALTER TABLE users ADD COLUMN referral_code TEXT;"); } catch(e){}
 
-const EXCHANGE_RATES = { RUB: 95.0, CUP: 320.0, MLC: 280.0, CLASICA: 300.0 };
+const EXCHANGE_RATES = {
+  RUB: 110.0,
+  CUP: 830.0,
+  MLC: 625.0,
+  CLASICA: 630.0
+};
 
 function calculateConversions(centsUSD) {
   const usdVal = centsUSD / 100;
-  return { RUB: (usdVal * EXCHANGE_RATES.RUB).toFixed(2), CUP: (usdVal * EXCHANGE_RATES.CUP).toFixed(2), MLC: (usdVal * EXCHANGE_RATES.MLC).toFixed(2), CLASICA: (usdVal * EXCHANGE_RATES.CLASICA).toFixed(2) };
+  return {
+    RUB: (usdVal * EXCHANGE_RATES.RUB).toFixed(2),
+    CUP: (usdVal * EXCHANGE_RATES.CUP).toFixed(2),
+    MLC: (usdVal * EXCHANGE_RATES.MLC).toFixed(2),
+    CLASICA: (usdVal * EXCHANGE_RATES.CLASICA).toFixed(2)
+  };
 }
 
 // ============================================================================
@@ -227,10 +238,26 @@ app.post('/api/telegram-webhook', async (req, res) => {
   res.status(200).json({ ok: true });
 });
 
+// Sincronización de usuario con sistema de referidos
 app.post('/api/users/sync', (req, res) => {
-  const { telegramId, fullName, username } = req.body;
-  db.prepare(`INSERT INTO users (telegram_id, username, full_name, referral_code) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name`).run(telegramId, username, fullName, `ref_${telegramId}`);
-  res.json({ success: true, user: db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId) });
+  const { telegramId, fullName, username, refCode } = req.body;
+  if (!telegramId) return res.status(400).json({ error: 'telegramId requerido' });
+
+  let referredById = null;
+  if (refCode) {
+    const referrer = db.prepare("SELECT id FROM users WHERE referral_code = ?").get(refCode);
+    if (referrer) referredById = referrer.id;
+  }
+
+  const generatedRefCode = `ref_${telegramId}`;
+  db.prepare(`
+    INSERT INTO users (telegram_id, username, full_name, referred_by, referral_code) 
+    VALUES (?, ?, ?, ?, ?) 
+    ON CONFLICT(telegram_id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name
+  `).run(telegramId, username, fullName, referredById, generatedRefCode);
+
+  const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
+  res.json({ success: true, user });
 });
 
 app.post('/api/users/info', (req, res) => {
@@ -239,23 +266,28 @@ app.post('/api/users/info', (req, res) => {
   res.json({ success: true });
 });
 
-// Recargar Saldo Billetera
+// Solicitud de recarga de billetera (Genera ticket/orden pendiente o instrucción)
 app.post('/api/wallet/deposit', (req, res) => {
-  const { telegramId, amountUSD } = req.body;
+  const { telegramId, amountUSD, paymentMethod, txProof } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
   if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
 
   const amountCents = Math.round(Number(amountUSD) * 100);
   if (isNaN(amountCents) || amountCents <= 0) return res.status(400).json({ error: 'Monto inválido' });
 
-  db.prepare(`UPDATE users SET balance_cents = balance_cents + ? WHERE id = ?`).run(amountCents, user.id);
-  const updatedUser = db.prepare(`SELECT * FROM users WHERE id = ?`).get(user.id);
-  res.json({ success: true, newBalanceUSD: (updatedUser.balance_cents / 100).toFixed(2) });
+  // Guardamos un ticket de soporte o pago para revisión de recarga
+  db.prepare(`INSERT INTO support_tickets (user_id, subject, message) VALUES (?, ?, ?)`).run(
+    user.id, 
+    `Recarga de Billetera: $${amountUSD} USD vía ${paymentMethod}`, 
+    `Comprobante/TXID: ${txProof || 'Pendiente de confirmación'}`
+  );
+
+  res.json({ success: true, message: 'Solicitud de recarga registrada. El saldo se acreditará tras verificar el pago.' });
 });
 
-// Comprar Membresía mensual
+// Membresía mensual
 app.post('/api/membership/upgrade', (req, res) => {
-  const { telegramId, plan } = req.body; // 'STANDARD' (1.99) o 'PREMIUM' (2.99)
+  const { telegramId, plan } = req.body;
   const user = db.prepare(`SELECT * FROM users WHERE telegram_id = ?`).get(telegramId);
   if (!user) return res.status(404).json({ error: 'Usuario no encontrado' });
 
@@ -266,7 +298,6 @@ app.post('/api/membership/upgrade', (req, res) => {
     return res.status(400).json({ error: 'Saldo insuficiente en tu billetera para adquirir esta membresía.' });
   }
 
-  // Descontar saldo y activar membresía por 30 días
   const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
   db.prepare(`UPDATE users SET balance_cents = balance_cents - ?, membership_plan = ?, membership_expires_at = ? WHERE id = ?`).run(costCents, plan, expiresAt, user.id);
 
@@ -285,7 +316,11 @@ app.post('/api/support', (req, res) => {
 
 app.get('/api/products', async (req, res) => {
   const products = await fetchProductsFromGoogleSheet();
-  res.json(products.map(p => ({ ...p, price_usd: p.price_decimal, conversions: calculateConversions(p.price_cents) })));
+  res.json(products.map(p => ({
+    ...p,
+    price_usd: p.price_decimal,
+    conversions: calculateConversions(p.price_cents)
+  })));
 });
 
 app.post('/api/cart/apply-coupon', (req, res) => {
@@ -338,14 +373,11 @@ app.get('/api/cart/:telegramId', async (req, res) => {
   }
 
   const subtotalAfterCoupon = Math.max(0, subtotalCents - discountCents);
-
-  // Incentivo / Milésimo descuento por pagar con billetera según membresía (Standard = 0.5% extra o $0.05, Premium = 1.0% extra)
-  // O milésimo descuento (ej. 0.001 o descuento por categoría)
   let walletIncentiveCents = 0;
   if (user.membership_plan === 'STANDARD') {
-    walletIncentiveCents = Math.floor(subtotalAfterCoupon * 0.005); // 0.5% milésimo descuento adicional
+    walletIncentiveCents = Math.floor(subtotalAfterCoupon * 0.005);
   } else if (user.membership_plan === 'PREMIUM') {
-    walletIncentiveCents = Math.floor(subtotalAfterCoupon * 0.012); // 1.2% descuento adicional superior
+    walletIncentiveCents = Math.floor(subtotalAfterCoupon * 0.012);
   }
 
   const totalCentsWallet = Math.max(0, subtotalAfterCoupon - walletIncentiveCents);
@@ -421,7 +453,6 @@ app.post('/api/orders/checkout', async (req, res) => {
   let subtotalAfterCoupon = Math.max(0, subtotalCents - discountCents);
   let finalTotalCents = subtotalAfterCoupon;
 
-  // Si paga con Billetera, aplicamos el milésimo descuento según su membresía
   if (provider === 'WALLET_BALANCE') {
     let walletIncentiveCents = 0;
     if (user.membership_plan === 'STANDARD') {
@@ -491,5 +522,5 @@ app.delete('/api/orders/all/:telegramId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Servidor Maestro V6 con Membresías y Descuentos activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Maestro V7 activo en puerto ${PORT}`);
 });
