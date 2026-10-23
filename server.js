@@ -1,7 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO V2 (24/7)
- * (Google Sheets + Carrito Item Quitar + Pedidos Borrar + Soporte + Billetera + Perfil)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO V3 (24/7)
  * ============================================================================
  */
 
@@ -147,8 +146,7 @@ async function fetchProductsFromGoogleSheet() {
     const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
     const res = await fetch(csvUrl);
     const csvText = await res.text();
-    const rows = csvText.split('
-').map(r => r.split(','));
+    const rows = csvText.split('\n').map(r => r.split(','));
     
     if (rows.length < 2) return [];
 
@@ -479,5 +477,5 @@ app.delete('/api/orders/all/:telegramId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Servidor Maestro V2 activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Maestro V3 activo en puerto ${PORT}`);
 });
