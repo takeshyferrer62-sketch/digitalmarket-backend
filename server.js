@@ -1,6 +1,6 @@
 /**
  * ============================================================================
- * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO V3 (24/7)
+ * 🌌 DIGITALMARKET - SERVIDOR MAESTRO UNIFICADO V4 (Google Sheets Robusto)
  * ============================================================================
  */
 
@@ -131,7 +131,7 @@ function calculateConversions(centsUSD) {
 }
 
 // ============================================================================
-// 📊 LECTOR DINÁMICO DE GOOGLE SHEETS PARA EL CATÁLOGO
+// 📊 LECTOR DINÁMICO DE GOOGLE SHEETS ROBUSTO (CON PARSER DE COMAS)
 // ============================================================================
 
 async function fetchProductsFromGoogleSheet() {
@@ -146,23 +146,46 @@ async function fetchProductsFromGoogleSheet() {
     const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/export?format=csv`;
     const res = await fetch(csvUrl);
     const csvText = await res.text();
-    const rows = csvText.split('\n').map(r => r.split(','));
     
+    const parseCSV = (text) => {
+      const lines = text.split('\n');
+      return lines.map(line => {
+        const row = [];
+        let inQuotes = false;
+        let current = '';
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i];
+          if (char === '"') {
+            inQuotes = !inQuotes;
+          } else if (char === ',' && !inQuotes) {
+            row.push(current.trim());
+            current = '';
+          } else {
+            current += char;
+          }
+        }
+        row.push(current.trim());
+        return row;
+      });
+    };
+
+    const rows = parseCSV(csvText);
     if (rows.length < 2) return [];
 
-    const headers = rows[0].map(h => h.trim().toLowerCase());
+    const headers = rows[0].map(h => h.trim().toLowerCase().replace(/^"|"$/g, ''));
     const products = [];
 
     for (let i = 1; i < rows.length; i++) {
       const cols = rows[i];
-      if (cols.length < headers.length) continue;
+      if (!cols || cols.length === 0 || cols[0] === '') continue;
 
       const p = {};
       headers.forEach((h, index) => {
         p[h] = cols[index] ? cols[index].trim().replace(/^"|"$/g, '') : '';
       });
 
-      if (p.is_active == '1' || p.is_active.toLowerCase() === 'true') {
+      const isActive = String(p.is_active || '1').trim();
+      if (isActive === '1' || isActive.toLowerCase() === 'true' || isActive === '') {
         products.push({
           id: Number(p.id) || i,
           sku: p.sku || `SKU-${i}`,
@@ -477,5 +500,5 @@ app.delete('/api/orders/all/:telegramId', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 DigitalMarket Servidor Maestro V3 activo en puerto ${PORT}`);
+  console.log(`🚀 DigitalMarket Servidor Maestro V4 activo en puerto ${PORT}`);
 });
